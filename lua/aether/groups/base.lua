@@ -23,11 +23,11 @@ function M.get(c, opts)
     ErrorMsg                    = { fg = c.bright_red, bold = true },
     VertSplit                   = { fg = c.border },
     WinSeparator                = { fg = c.border, bold = true },
-    Folded                      = { fg = c.blue, bg = c.muted, style = opts.styles.comments },
+    Folded                      = { fg = c.bright_blue, bg = c.lighter_bg, style = opts.styles.comments },
     FoldColumn                  = { bg = opts.transparent and c.none or c.bg, fg = c.muted },
     SignColumn                  = { bg = opts.transparent and c.none or c.bg, fg = c.muted },
     SignColumnSB                = { bg = c.bg_sidebar, fg = c.muted },
-    Substitute                  = { bg = c.red, fg = c.black },
+    Substitute                  = { bg = c.red, fg = c.bg },
     LineNr                      = { fg = c.muted },
     CursorLineNr                = { fg = c.orange, bold = true },
     LineNrAbove                 = { fg = c.muted },
@@ -80,7 +80,7 @@ function M.get(c, opts)
     Number                      = { fg = c.orange },
     Boolean                     = { fg = c.orange },
     Float                       = { fg = c.orange },
-    Identifier                  = { fg = c.bright_purple, style = opts.styles.variables },
+    Identifier                  = { fg = c.bright_cyan, style = opts.styles.variables },
     Function                    = { fg = c.blue, bold = true, style = opts.styles.functions },
     Statement                   = { fg = c.blue, bold = true },
     Conditional                 = { fg = c.bright_purple },
@@ -118,29 +118,8 @@ function M.get(c, opts)
     qfFileName                  = { fg = c.blue },
     qfLineNr                    = { fg = c.dark_fg },
 
-    -- LSP
-    LspReferenceText            = { bg = c.muted },
-    LspReferenceRead            = { bg = c.muted },
-    LspReferenceWrite           = { bg = c.muted },
-    LspSignatureActiveParameter = { bg = Util.blend_bg(c.bg_visual, 0.4), bold = true },
-    LspCodeLens                 = { fg = c.muted },
-    LspInlayHint                = { bg = Util.blend_bg(c.selection, 0.1), fg = c.muted },
+    -- LSP info border (the rest of LSP and Diagnostic groups live in lsp.lua)
     LspInfoBorder               = { fg = c.border_highlight, bg = c.bg_float },
-
-    -- Diagnostics
-    DiagnosticError             = { fg = c.bright_red },
-    DiagnosticWarn              = { fg = c.warning },
-    DiagnosticInfo              = { fg = c.info },
-    DiagnosticHint              = { fg = c.hint },
-    DiagnosticUnnecessary       = { fg = c.lighter_bg },
-    DiagnosticVirtualTextError  = { bg = Util.blend_bg(c.error, 0.1), fg = c.bright_red },
-    DiagnosticVirtualTextWarn   = { bg = Util.blend_bg(c.warning, 0.1), fg = c.warning },
-    DiagnosticVirtualTextInfo   = { bg = Util.blend_bg(c.info, 0.1), fg = c.bright_blue },
-    DiagnosticVirtualTextHint   = { bg = Util.blend_bg(c.hint, 0.1), fg = c.hint },
-    DiagnosticUnderlineError    = { undercurl = true, sp = c.error },
-    DiagnosticUnderlineWarn     = { undercurl = true, sp = c.warning },
-    DiagnosticUnderlineInfo     = { undercurl = true, sp = c.info },
-    DiagnosticUnderlineHint     = { undercurl = true, sp = c.hint },
 
     -- Health
     healthError                 = { fg = c.bright_red },
