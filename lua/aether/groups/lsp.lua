@@ -37,7 +37,7 @@ function M.get(c, opts)
     ["@lsp.type.struct"]             = { link = "Structure" },
     ["@lsp.type.type"]               = { link = "Type" },
     ["@lsp.type.typeParameter"]      = { link = "Typedef" },
-    ["@lsp.type.variable"]           = { link = "Identifier" },
+    ["@lsp.type.variable"]           = { link = "@variable" },
 
     -- LSP References and Definitions
     LspReferenceText                 = { bg = c.lighter_bg },
