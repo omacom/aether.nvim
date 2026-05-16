@@ -23,7 +23,7 @@ function M.get(c, opts)
     ErrorMsg                    = { fg = c.bright_red, bold = true },
     VertSplit                   = { fg = c.border },
     WinSeparator                = { fg = c.border, bold = true },
-    Folded                      = { fg = c.bright_blue, bg = c.lighter_bg, style = opts.styles.comments },
+    Folded                      = { fg = c.bright_blue, bg = Util.blend_bg(c.fg, 0.1), style = opts.styles.comments },
     FoldColumn                  = { bg = opts.transparent and c.none or c.bg, fg = c.muted },
     SignColumn                  = { bg = opts.transparent and c.none or c.bg, fg = c.muted },
     SignColumnSB                = { bg = c.bg_sidebar, fg = c.muted },
