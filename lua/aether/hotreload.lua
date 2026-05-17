@@ -6,7 +6,7 @@ local M = {}
 
 -- Configuration constants
 local LAZY_RELOAD_DELAY_MS = 100
-local EXTERNAL_RELOAD_DELAY_MS = 150
+local EXTERNAL_RELOAD_DELAY_MS = 250
 local FS_EVENT_REARM_DELAY_MS = 50
 
 -- External theme spec files written by theme generators (aether CLI, omarchy).
@@ -26,6 +26,11 @@ local uv = vim.uv or vim.loop
 -- Keep libuv fs_event handles alive; if collected the watcher stops firing.
 -- Keyed by path so we can introspect and avoid duplicate watchers.
 local fs_event_handles = {}
+
+-- Per-path debounce timers. An atomic file write produces several inotify
+-- events (IN_MOVE_SELF, IN_ATTRIB, IN_MODIFY, etc.); we collapse a burst into
+-- a single reload by cancel-and-rescheduling the timer on each event.
+local pending_reload_timers = {}
 
 --- Check if aether is the currently active colorscheme
 --- @return boolean
@@ -221,6 +226,29 @@ local function stop_fs_watch(path)
   fs_event_handles[path] = nil
 end
 
+--- Schedule a reload for `path`, cancelling any in-flight reload for the
+--- same path. Collapses bursts of inotify events into a single reload.
+--- @param path string
+local function schedule_reload(path)
+  local existing = pending_reload_timers[path]
+  if existing then
+    pcall(function()
+      if not existing:is_closing() then
+        existing:stop()
+        existing:close()
+      end
+    end)
+  end
+
+  pending_reload_timers[path] = vim.defer_fn(function()
+    pending_reload_timers[path] = nil
+    if not is_aether_active() then
+      return
+    end
+    reload_with_fresh_opts(path)
+  end, EXTERNAL_RELOAD_DELAY_MS)
+end
+
 --- Start a libuv fs_event watcher on a single path.
 --- Re-arms itself on every event because atomic writes (write-temp + rename)
 --- swap the inode and would otherwise leave the original watcher stranded.
@@ -252,13 +280,7 @@ local function start_fs_watch(path)
       start_fs_watch(path)
     end, FS_EVENT_REARM_DELAY_MS)
 
-    if not is_aether_active() then
-      return
-    end
-
-    vim.defer_fn(function()
-      reload_with_fresh_opts(path)
-    end, EXTERNAL_RELOAD_DELAY_MS)
+    schedule_reload(path)
   end
 
   local ok, err = handle:start(path, {}, vim.schedule_wrap(on_change))
