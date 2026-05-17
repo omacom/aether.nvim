@@ -38,6 +38,13 @@ local function is_aether_active()
   return vim.g.colors_name == "aether"
 end
 
+-- Modules that must survive a hotreload cycle. Clearing aether.hotreload
+-- would drop the did_setup guard and re-register every autocmd / fs_event
+-- watcher on the next aether.setup() call, snowballing reloads.
+local PRESERVED_MODULES = {
+  ["aether.hotreload"] = true,
+}
+
 --- Clear all aether-related modules from package cache
 --- @param include_config boolean Whether to also clear the config module
 local function clear_aether_modules(include_config)
@@ -46,7 +53,11 @@ local function clear_aether_modules(include_config)
     local is_lualine_theme = module_name:match(LUALINE_THEME_PATTERN)
     local is_config_module = module_name == "aether.config"
 
-    if (is_aether_module or is_lualine_theme) and (include_config or not is_config_module) then
+    local should_clear = (is_aether_module or is_lualine_theme)
+      and not PRESERVED_MODULES[module_name]
+      and (include_config or not is_config_module)
+
+    if should_clear then
       package.loaded[module_name] = nil
     end
   end
