@@ -6,7 +6,11 @@ local M = {}
 
 -- Configuration constants
 local LAZY_RELOAD_DELAY_MS = 100
-local EXTERNAL_RELOAD_DELAY_MS = 250
+-- The aether CLI commonly rewrites neovim.lua several times per theme
+-- generation (palette write, blueprint pass, post-process). A 1500 ms
+-- trailing-edge window comfortably absorbs that burst while still feeling
+-- responsive to the user.
+local EXTERNAL_RELOAD_DELAY_MS = 1500
 local FS_EVENT_REARM_DELAY_MS = 50
 
 -- External theme spec files written by theme generators (aether CLI, omarchy).
