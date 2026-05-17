@@ -10,6 +10,7 @@ local M = {}
 ---@return aether.Config opts
 function M.load(opts)
   opts = require("aether.config").extend(opts)
+  require("aether.hotreload").setup()
   return require("aether.theme").setup(opts)
 end
 
@@ -17,6 +18,7 @@ end
 ---@param opts? aether.Config
 function M.setup(opts)
   require("aether.config").setup(opts)
+  require("aether.hotreload").setup()
 end
 
 return M

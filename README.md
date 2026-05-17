@@ -307,16 +307,18 @@ require("lualine").setup({
 
 ## Hot Reload
 
-For theme development, enable hot reload to automatically refresh when you save plugin files:
+Hot reload is enabled automatically when the plugin loads. It watches:
 
-```lua
-require("aether.hotreload").setup()
-```
+- Edits to plugin files while developing aether itself
+- `~/.config/aether/theme/neovim.lua` (rewritten by the `aether` CLI when generating a theme)
+- `~/.config/omarchy/current/theme/neovim.lua` (when running under omarchy)
+- `LazyReload` events from lazy.nvim
 
-To reload manually:
+Manual commands:
 
 ```vim
-:AetherReload
+:AetherReload         " reload colorscheme with current config
+:AetherReloadStatus   " show which paths are being watched
 ```
 
 ## Supported Plugins

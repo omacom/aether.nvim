@@ -316,9 +316,18 @@ local function setup_status_command()
   end, { desc = "Show aether hotreload watcher status" })
 end
 
+local did_setup = false
+
 --- Initialize hot reload functionality
---- Sets up autocmds and user commands for automatic theme reloading
+--- Sets up autocmds and user commands for automatic theme reloading.
+--- Idempotent: safe to call multiple times (e.g. from both the plugin entry
+--- and a user's own require("aether.hotreload").setup() line).
 function M.setup()
+  if did_setup then
+    return
+  end
+  did_setup = true
+
   setup_lazy_reload_autocmd()
   setup_dev_file_watcher()
   setup_external_config_watcher()
