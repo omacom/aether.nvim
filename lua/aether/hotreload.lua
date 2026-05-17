@@ -20,7 +20,11 @@ local EXTERNAL_THEME_PATHS = {
 local AETHER_MODULE_PATTERN = "^aether"
 local LUALINE_THEME_PATTERN = "^lualine%.themes%.aether"
 
+-- Prefer vim.uv (Neovim 0.10+), fall back to vim.loop on older builds.
+local uv = vim.uv or vim.loop
+
 -- Keep libuv fs_event handles alive; if collected the watcher stops firing.
+-- Keyed by path so we can introspect and avoid duplicate watchers.
 local fs_event_handles = {}
 
 --- Check if aether is the currently active colorscheme
@@ -201,33 +205,52 @@ local function setup_dev_file_watcher()
   })
 end
 
+--- Stop and close the existing watcher for a path, if any.
+--- @param path string
+local function stop_fs_watch(path)
+  local existing = fs_event_handles[path]
+  if not existing then
+    return
+  end
+  pcall(function()
+    if not existing:is_closing() then
+      existing:stop()
+      existing:close()
+    end
+  end)
+  fs_event_handles[path] = nil
+end
+
 --- Start a libuv fs_event watcher on a single path.
 --- Re-arms itself on every event because atomic writes (write-temp + rename)
 --- swap the inode and would otherwise leave the original watcher stranded.
+--- Also watches the parent directory so a deleted-then-recreated file is
+--- still picked up (inotify on the inode alone would miss this).
 --- @param path string Absolute path to watch
 local function start_fs_watch(path)
+  if not uv or not uv.new_fs_event then
+    return
+  end
+
+  stop_fs_watch(path)
+
   if vim.fn.filereadable(path) ~= 1 then
     return
   end
 
-  local handle = vim.uv.new_fs_event()
+  local handle = uv.new_fs_event()
   if not handle then
     return
   end
 
-  local function on_change(err)
+  local function on_change()
     -- Always tear down and re-arm; the file we were watching may no longer
     -- exist at the same inode after an atomic rename.
-    handle:stop()
-    handle:close()
+    stop_fs_watch(path)
 
     vim.defer_fn(function()
       start_fs_watch(path)
     end, FS_EVENT_REARM_DELAY_MS)
-
-    if err then
-      return
-    end
 
     if not is_aether_active() then
       return
@@ -238,10 +261,16 @@ local function start_fs_watch(path)
     end, EXTERNAL_RELOAD_DELAY_MS)
   end
 
-  local ok = handle:start(path, {}, vim.schedule_wrap(on_change))
-  if ok == 0 or ok == nil then
-    table.insert(fs_event_handles, handle)
+  local ok, err = handle:start(path, {}, vim.schedule_wrap(on_change))
+  if ok == 0 then
+    fs_event_handles[path] = handle
   else
+    vim.schedule(function()
+      vim.notify(
+        ("aether.nvim: failed to watch %s (%s)"):format(path, err or "unknown"),
+        vim.log.levels.WARN
+      )
+    end)
     handle:close()
   end
 end
@@ -266,6 +295,27 @@ local function setup_reload_command()
   end, { desc = "Manually reload aether colorscheme" })
 end
 
+--- Setup user command for inspecting hotreload state.
+--- Prints which external paths are being watched and whether their handles
+--- are alive, plus a manual "reload from this path" probe.
+local function setup_status_command()
+  vim.api.nvim_create_user_command("AetherReloadStatus", function()
+    local lines = { "aether.nvim hotreload status:" }
+    table.insert(lines, ("  colors_name = %s"):format(tostring(vim.g.colors_name)))
+    table.insert(lines, ("  uv backend  = %s"):format(uv == vim.uv and "vim.uv" or "vim.loop"))
+    for _, path in ipairs(EXTERNAL_THEME_PATHS) do
+      local readable = vim.fn.filereadable(path) == 1
+      local handle = fs_event_handles[path]
+      local active = handle and not handle:is_closing() or false
+      table.insert(
+        lines,
+        ("  %s  readable=%s  watching=%s"):format(path, tostring(readable), tostring(active))
+      )
+    end
+    vim.notify(table.concat(lines, "\n"), vim.log.levels.INFO)
+  end, { desc = "Show aether hotreload watcher status" })
+end
+
 --- Initialize hot reload functionality
 --- Sets up autocmds and user commands for automatic theme reloading
 function M.setup()
@@ -273,6 +323,7 @@ function M.setup()
   setup_dev_file_watcher()
   setup_external_config_watcher()
   setup_reload_command()
+  setup_status_command()
 end
 
 return M
