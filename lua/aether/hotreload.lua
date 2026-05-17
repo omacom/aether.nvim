@@ -27,21 +27,27 @@ local LUALINE_THEME_PATTERN = "^lualine%.themes%.aether"
 -- Prefer vim.uv (Neovim 0.10+), fall back to vim.loop on older builds.
 local uv = vim.uv or vim.loop
 
--- Keep libuv fs_event handles alive; if collected the watcher stops firing.
--- Keyed by path so we can introspect and avoid duplicate watchers.
-local fs_event_handles = {}
-
--- Per-path debounce timers. An atomic file write produces several inotify
--- events (IN_MOVE_SELF, IN_ATTRIB, IN_MODIFY, etc.); we collapse a burst into
--- a single reload by cancel-and-rescheduling the timer on each event.
-local pending_reload_timers = {}
-
--- Hash of the opts last applied to the colorscheme. Used to dedup reloads
--- across ALL trigger sources (fs_event, LazyReload, manual). The aether CLI
--- often rewrites the spec multiple times during one theme generation, and
--- lazy.nvim's change_detection can ALSO fire LazyReload on the same write,
--- producing several reload calls per actual color change.
-local last_applied_opts_hash = nil
+-- All persistent state lives on _G so it survives module reloads. Lazy.nvim's
+-- change_detection (or any other reloader) can clear
+-- package.loaded["aether.hotreload"] independently of our PRESERVED_MODULES
+-- guard. If our state died with the module, the next setup() would create
+-- fresh fs_event handles and autocmd entries on top of the still-live old
+-- ones, accumulating watchers (the "1, 2, 3, 4 notifications" symptom).
+-- Keying on _G means there is exactly one state table for the lifetime of
+-- the Neovim session no matter how many times the module reloads.
+_G.__aether_hotreload_state = _G.__aether_hotreload_state or {
+  did_setup = false,
+  -- Keep libuv fs_event handles alive (keyed by path); if collected the
+  -- watcher stops firing.
+  fs_event_handles = {},
+  -- Per-path debounce timers. Cancel-and-reschedule on each event so a
+  -- burst of inotify events collapses to a single reload.
+  pending_reload_timers = {},
+  -- Hash of the opts last applied to the colorscheme. Used to dedup reloads
+  -- across ALL trigger sources (fs_event, LazyReload, manual).
+  last_applied_opts_hash = nil,
+}
+local state = _G.__aether_hotreload_state
 
 --- Hash an opts table by its inspected representation. Cheap enough to run
 --- on every reload candidate and stable across identical tables.
@@ -192,10 +198,10 @@ local function reload_with_fresh_opts(source_path)
   -- several times with identical content) and the LazyReload event that
   -- lazy.nvim fires for the same write.
   local new_hash = opts_hash(opts)
-  if new_hash == last_applied_opts_hash then
+  if new_hash == state.last_applied_opts_hash then
     return
   end
-  last_applied_opts_hash = new_hash
+  state.last_applied_opts_hash = new_hash
 
   local was_active = is_aether_active()
 
@@ -216,8 +222,10 @@ local function reload_with_fresh_opts(source_path)
 end
 
 --- Setup autocmd for lazy.nvim reload events
-local function setup_lazy_reload_autocmd()
+--- @param augroup integer augroup id created with clear=true
+local function setup_lazy_reload_autocmd(augroup)
   vim.api.nvim_create_autocmd("User", {
+    group = augroup,
     pattern = "LazyReload",
     callback = function(event)
       -- Only handle aether plugin reloads
@@ -236,10 +244,12 @@ local function setup_lazy_reload_autocmd()
 end
 
 --- Setup autocmd for plugin development file changes
-local function setup_dev_file_watcher()
+--- @param augroup integer augroup id created with clear=true
+local function setup_dev_file_watcher(augroup)
   local plugin_path = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":h:h:h")
 
   vim.api.nvim_create_autocmd("BufWritePost", {
+    group = augroup,
     pattern = plugin_path .. "/lua/**/*.lua",
     callback = function()
       if is_aether_active() then
@@ -253,7 +263,7 @@ end
 --- Stop and close the existing watcher for a path, if any.
 --- @param path string
 local function stop_fs_watch(path)
-  local existing = fs_event_handles[path]
+  local existing = state.fs_event_handles[path]
   if not existing then
     return
   end
@@ -263,14 +273,14 @@ local function stop_fs_watch(path)
       existing:close()
     end
   end)
-  fs_event_handles[path] = nil
+  state.fs_event_handles[path] = nil
 end
 
 --- Schedule a reload for `path`, cancelling any in-flight reload for the
 --- same path. Collapses bursts of inotify events into a single reload.
 --- @param path string
 local function schedule_reload(path)
-  local existing = pending_reload_timers[path]
+  local existing = state.pending_reload_timers[path]
   if existing then
     pcall(function()
       if not existing:is_closing() then
@@ -280,8 +290,8 @@ local function schedule_reload(path)
     end)
   end
 
-  pending_reload_timers[path] = vim.defer_fn(function()
-    pending_reload_timers[path] = nil
+  state.pending_reload_timers[path] = vim.defer_fn(function()
+    state.pending_reload_timers[path] = nil
     if not is_aether_active() then
       return
     end
@@ -325,7 +335,7 @@ local function start_fs_watch(path)
 
   local ok, err = handle:start(path, {}, vim.schedule_wrap(on_change))
   if ok == 0 then
-    fs_event_handles[path] = handle
+    state.fs_event_handles[path] = handle
   else
     vim.schedule(function()
       vim.notify(
@@ -339,14 +349,16 @@ end
 
 --- Setup filesystem watchers for external theme spec files written by CLI
 --- tools (aether, omarchy). BufWritePost only fires for in-editor writes, so
---- we use libuv fs_event to catch out-of-process rewrites too.
+--- we use libuv fs_event to catch out-of-process rewrites too. Stops any
+--- pre-existing watchers first so re-setup replaces rather than stacks.
 local function setup_external_config_watcher()
   for _, path in ipairs(EXTERNAL_THEME_PATHS) do
-    start_fs_watch(path)
+    start_fs_watch(path) -- internally calls stop_fs_watch first
   end
 end
 
---- Setup user command for manual reloading
+--- Setup user command for manual reloading.
+--- nvim_create_user_command is replace-by-name, so no augroup needed.
 local function setup_reload_command()
   vim.api.nvim_create_user_command("AetherReload", function()
     if is_aether_active() then
@@ -367,7 +379,7 @@ local function setup_status_command()
     table.insert(lines, ("  uv backend  = %s"):format(uv == vim.uv and "vim.uv" or "vim.loop"))
     for _, path in ipairs(EXTERNAL_THEME_PATHS) do
       local readable = vim.fn.filereadable(path) == 1
-      local handle = fs_event_handles[path]
+      local handle = state.fs_event_handles[path]
       local active = handle and not handle:is_closing() or false
       table.insert(
         lines,
@@ -378,20 +390,24 @@ local function setup_status_command()
   end, { desc = "Show aether hotreload watcher status" })
 end
 
-local did_setup = false
-
 --- Initialize hot reload functionality
 --- Sets up autocmds and user commands for automatic theme reloading.
---- Idempotent: safe to call multiple times (e.g. from both the plugin entry
---- and a user's own require("aether.hotreload").setup() line).
+--- Idempotent in two layers:
+---   1. did_setup short-circuits on the common case (state survived module load).
+---   2. If the module was reloaded externally (lazy.nvim change_detection) and
+---      state nevertheless survived via _G, the augroup's clear=true and the
+---      stop-then-start in start_fs_watch make re-registration a no-op net
+---      change instead of a stacking one.
 function M.setup()
-  if did_setup then
+  if state.did_setup then
     return
   end
-  did_setup = true
+  state.did_setup = true
 
-  setup_lazy_reload_autocmd()
-  setup_dev_file_watcher()
+  local augroup = vim.api.nvim_create_augroup("AetherHotreload", { clear = true })
+
+  setup_lazy_reload_autocmd(augroup)
+  setup_dev_file_watcher(augroup)
   setup_external_config_watcher()
   setup_reload_command()
   setup_status_command()
