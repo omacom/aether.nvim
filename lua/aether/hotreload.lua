@@ -6,12 +6,22 @@ local M = {}
 
 -- Configuration constants
 local LAZY_RELOAD_DELAY_MS = 100
-local OMARCHY_RELOAD_DELAY_MS = 100
-local OMARCHY_THEME_PATH = vim.fn.expand("~/.config/omarchy/current/theme/neovim.lua")
+local EXTERNAL_RELOAD_DELAY_MS = 150
+local FS_EVENT_REARM_DELAY_MS = 50
+
+-- External theme spec files written by theme generators (aether CLI, omarchy).
+-- Each is a full lazy.nvim plugin spec returning `{ { "...aether.nvim", opts = {...} } }`.
+local EXTERNAL_THEME_PATHS = {
+  vim.fn.expand("~/.config/aether/theme/neovim.lua"),
+  vim.fn.expand("~/.config/omarchy/current/theme/neovim.lua"),
+}
 
 -- Patterns for module matching
 local AETHER_MODULE_PATTERN = "^aether"
 local LUALINE_THEME_PATTERN = "^lualine%.themes%.aether"
+
+-- Keep libuv fs_event handles alive; if collected the watcher stops firing.
+local fs_event_handles = {}
 
 --- Check if aether is the currently active colorscheme
 --- @return boolean
@@ -93,6 +103,23 @@ local function get_theme_opts()
   return theme_spec[1].opts
 end
 
+--- Get fresh theme options by executing an external lazy spec file directly.
+--- Used when the aether/omarchy CLI rewrites the spec on disk.
+--- @param path string Absolute path to a lazy.nvim plugin spec file
+--- @return table|nil opts Theme options or nil if file is missing/invalid
+local function get_theme_opts_from_file(path)
+  if vim.fn.filereadable(path) ~= 1 then
+    return nil
+  end
+
+  local ok, theme_spec = pcall(dofile, path)
+  if not ok or type(theme_spec) ~= "table" or not is_aether_theme(theme_spec) then
+    return nil
+  end
+
+  return theme_spec[1].opts
+end
+
 --- Reload the aether colorscheme with current configuration
 --- This preserves the existing config module to maintain user options
 local function reload_colorscheme()
@@ -113,8 +140,9 @@ end
 --- Reload the aether colorscheme with fresh options from config
 --- This clears ALL modules including config and reloads with new options
 --- This works both when aether is active (reload) and when switching to aether (load)
-local function reload_with_fresh_opts()
-  local opts = get_theme_opts()
+--- @param source_path string|nil Optional path to read opts from directly; falls back to plugins.theme
+local function reload_with_fresh_opts(source_path)
+  local opts = source_path and get_theme_opts_from_file(source_path) or get_theme_opts()
   if not opts then
     -- Theme is not aether or failed to load, skip reload
     return
@@ -173,24 +201,58 @@ local function setup_dev_file_watcher()
   })
 end
 
---- Setup autocmd for external theme config file changes (omarchy)
-local function setup_external_config_watcher()
-  if vim.fn.filereadable(OMARCHY_THEME_PATH) ~= 1 then
+--- Start a libuv fs_event watcher on a single path.
+--- Re-arms itself on every event because atomic writes (write-temp + rename)
+--- swap the inode and would otherwise leave the original watcher stranded.
+--- @param path string Absolute path to watch
+local function start_fs_watch(path)
+  if vim.fn.filereadable(path) ~= 1 then
     return
   end
 
-  vim.api.nvim_create_autocmd("BufWritePost", {
-    pattern = OMARCHY_THEME_PATH,
-    callback = function()
-      if not is_aether_active() then
-        return
-      end
+  local handle = vim.uv.new_fs_event()
+  if not handle then
+    return
+  end
 
-      -- Defer longer to allow other reload mechanisms to complete first
-      vim.defer_fn(reload_with_fresh_opts, OMARCHY_RELOAD_DELAY_MS)
-    end,
-    desc = "Reload aether theme when omarchy config changes",
-  })
+  local function on_change(err)
+    -- Always tear down and re-arm; the file we were watching may no longer
+    -- exist at the same inode after an atomic rename.
+    handle:stop()
+    handle:close()
+
+    vim.defer_fn(function()
+      start_fs_watch(path)
+    end, FS_EVENT_REARM_DELAY_MS)
+
+    if err then
+      return
+    end
+
+    if not is_aether_active() then
+      return
+    end
+
+    vim.defer_fn(function()
+      reload_with_fresh_opts(path)
+    end, EXTERNAL_RELOAD_DELAY_MS)
+  end
+
+  local ok = handle:start(path, {}, vim.schedule_wrap(on_change))
+  if ok == 0 or ok == nil then
+    table.insert(fs_event_handles, handle)
+  else
+    handle:close()
+  end
+end
+
+--- Setup filesystem watchers for external theme spec files written by CLI
+--- tools (aether, omarchy). BufWritePost only fires for in-editor writes, so
+--- we use libuv fs_event to catch out-of-process rewrites too.
+local function setup_external_config_watcher()
+  for _, path in ipairs(EXTERNAL_THEME_PATHS) do
+    start_fs_watch(path)
+  end
 end
 
 --- Setup user command for manual reloading
