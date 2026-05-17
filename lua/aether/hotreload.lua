@@ -36,6 +36,28 @@ local fs_event_handles = {}
 -- a single reload by cancel-and-rescheduling the timer on each event.
 local pending_reload_timers = {}
 
+-- Last reloaded content hash per path. The aether CLI sometimes rewrites
+-- neovim.lua several times during one theme-generation run with identical
+-- final content; skipping reloads when the content is unchanged stops the
+-- duplicate "reloaded with new colors" notifications.
+local last_reload_hash = {}
+
+--- Read a file fully and return its SHA-256 hash, or nil if unreadable.
+--- @param path string
+--- @return string|nil
+local function file_content_hash(path)
+  local f = io.open(path, "rb")
+  if not f then
+    return nil
+  end
+  local content = f:read("*a")
+  f:close()
+  if not content then
+    return nil
+  end
+  return vim.fn.sha256(content)
+end
+
 --- Check if aether is the currently active colorscheme
 --- @return boolean
 local function is_aether_active()
@@ -260,6 +282,14 @@ local function schedule_reload(path)
     if not is_aether_active() then
       return
     end
+
+    local hash = file_content_hash(path)
+    if hash and hash == last_reload_hash[path] then
+      -- File touched but content identical to the last reload; skip.
+      return
+    end
+    last_reload_hash[path] = hash
+
     reload_with_fresh_opts(path)
   end, EXTERNAL_RELOAD_DELAY_MS)
 end
