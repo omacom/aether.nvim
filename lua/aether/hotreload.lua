@@ -36,26 +36,19 @@ local fs_event_handles = {}
 -- a single reload by cancel-and-rescheduling the timer on each event.
 local pending_reload_timers = {}
 
--- Last reloaded content hash per path. The aether CLI sometimes rewrites
--- neovim.lua several times during one theme-generation run with identical
--- final content; skipping reloads when the content is unchanged stops the
--- duplicate "reloaded with new colors" notifications.
-local last_reload_hash = {}
+-- Hash of the opts last applied to the colorscheme. Used to dedup reloads
+-- across ALL trigger sources (fs_event, LazyReload, manual). The aether CLI
+-- often rewrites the spec multiple times during one theme generation, and
+-- lazy.nvim's change_detection can ALSO fire LazyReload on the same write,
+-- producing several reload calls per actual color change.
+local last_applied_opts_hash = nil
 
---- Read a file fully and return its SHA-256 hash, or nil if unreadable.
---- @param path string
---- @return string|nil
-local function file_content_hash(path)
-  local f = io.open(path, "rb")
-  if not f then
-    return nil
-  end
-  local content = f:read("*a")
-  f:close()
-  if not content then
-    return nil
-  end
-  return vim.fn.sha256(content)
+--- Hash an opts table by its inspected representation. Cheap enough to run
+--- on every reload candidate and stable across identical tables.
+--- @param opts table
+--- @return string
+local function opts_hash(opts)
+  return vim.fn.sha256(vim.inspect(opts))
 end
 
 --- Check if aether is the currently active colorscheme
@@ -194,6 +187,16 @@ local function reload_with_fresh_opts(source_path)
     return
   end
 
+  -- Cross-source dedup: skip if the resolved opts match the last applied
+  -- ones. Catches both repeat fs_event reloads (CLI rewrites the file
+  -- several times with identical content) and the LazyReload event that
+  -- lazy.nvim fires for the same write.
+  local new_hash = opts_hash(opts)
+  if new_hash == last_applied_opts_hash then
+    return
+  end
+  last_applied_opts_hash = new_hash
+
   local was_active = is_aether_active()
 
   clear_aether_modules(true) -- Clear everything including config
@@ -282,14 +285,6 @@ local function schedule_reload(path)
     if not is_aether_active() then
       return
     end
-
-    local hash = file_content_hash(path)
-    if hash and hash == last_reload_hash[path] then
-      -- File touched but content identical to the last reload; skip.
-      return
-    end
-    last_reload_hash[path] = hash
-
     reload_with_fresh_opts(path)
   end, EXTERNAL_RELOAD_DELAY_MS)
 end
