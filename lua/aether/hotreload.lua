@@ -167,27 +167,36 @@ local function find_spec_entry(theme_spec, pattern)
 end
 
 --- Resolve a parsed lazy.nvim plugin spec to a reload action.
---- Two recognised shapes:
----   1. Direct  - contains an aether.nvim entry with `opts = {...}`. The
----      reload applies those opts via aether.setup + aether.load.
----   2. Indirect - contains a LazyVim entry with `opts.colorscheme = "X"`.
----      The reload re-runs `:colorscheme X`, which fires colors/X.lua and
----      lets that file call aether.load() with whatever palette it bundles
----      (e.g. hackerman.nvim's colors/hackerman.lua).
+--- Two recognised shapes, checked in this order:
+---   1. Indirect - LazyVim entry with `opts.colorscheme = "X"`. Reload by
+---      running `:colorscheme X`, which fires colors/X.{lua,vim} and lets
+---      that file call aether.load() with no args, falling back to opts
+---      already saved via the user's aether.setup(...). This is what we
+---      want for omarchy theme switches: the local plugins.theme.lua
+---      config keeps winning instead of the external file's opts.
+---   2. Direct - aether.nvim entry with `opts = {...}`. Reload applies
+---      those opts via aether.setup + aether.load. Used when no LazyVim
+---      indirect handle is present (e.g. the aether CLI's own external
+---      file at ~/.config/aether/theme/neovim.lua, where the file IS the
+---      intended source of truth for opts).
+---
+--- Order matters: omarchy theme files contain both entries, so checking
+--- LazyVim first ensures the user's local opts are honoured rather than
+--- being overwritten by the theme-bundled aether opts on every switch.
 --- @param theme_spec table
 --- @return table|nil action { kind = "opts", opts = table } or { kind = "colorscheme", name = string }
 local function resolve_reload_action(theme_spec)
-  local aether_entry = find_spec_entry(theme_spec, "aether")
-  if aether_entry and type(aether_entry.opts) == "table" then
-    return { kind = "opts", opts = aether_entry.opts }
-  end
-
   local lazyvim_entry = find_spec_entry(theme_spec, "LazyVim")
   if lazyvim_entry
     and type(lazyvim_entry.opts) == "table"
     and type(lazyvim_entry.opts.colorscheme) == "string"
   then
     return { kind = "colorscheme", name = lazyvim_entry.opts.colorscheme }
+  end
+
+  local aether_entry = find_spec_entry(theme_spec, "aether")
+  if aether_entry and type(aether_entry.opts) == "table" then
+    return { kind = "opts", opts = aether_entry.opts }
   end
 
   return nil
