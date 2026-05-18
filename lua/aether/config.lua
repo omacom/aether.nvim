@@ -53,12 +53,20 @@ M.defaults = {
 }
 
 ---@type aether.Config
-M.options = nil
+---Resolved options. Mirrored onto `_G.__aether_config_options` so the
+---user's setup() opts survive when external code clears
+---`package.loaded["aether.config"]` (e.g. lazy.nvim change_detection,
+---a user's `User LazyReload` handler that recursively unloads the
+---plugin's modules). Without this persistence layer, the next
+---`aether.load()` after a clear sees nil and silently falls back to
+---defaults, dropping the user's overrides.
+M.options = _G.__aether_config_options
 
 ---Configure aether
 ---@param options? aether.Config
 function M.setup(options)
   M.options = vim.tbl_deep_extend("force", {}, M.defaults, options or {})
+  _G.__aether_config_options = M.options
 end
 
 ---Extend current options with overrides. Falls back to defaults when
