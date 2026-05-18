@@ -274,7 +274,10 @@ end
 --- This clears ALL modules including config and reloads with new options
 --- This works both when aether is active (reload) and when switching to aether (load)
 --- @param source_path string|nil Optional path to read opts from directly; falls back to plugins.theme
-local function reload_with_fresh_opts(source_path)
+--- @param source_path string|nil External file path; nil for in-process triggers (LazyReload, manual)
+--- @param force boolean|nil When true, bypass the opts-hash dedup. Pass true from triggers where
+---                          aether's source code may have changed but opts didn't (e.g. LazyReload).
+local function reload_with_fresh_opts(source_path, force)
   local action = source_path and get_reload_action_from_file(source_path) or get_reload_action()
   if not action then
     -- Spec isn't recognised (not aether, no LazyVim colorscheme entry).
@@ -282,11 +285,9 @@ local function reload_with_fresh_opts(source_path)
   end
 
   if action.kind == "colorscheme" then
-    -- Dedup against the running scheme. Re-applying the same scheme when the
-    -- spec file is rewritten with identical content would be pointless churn.
-    if vim.g.colors_name == action.name then
-      return
-    end
+    -- No name-based dedup here: re-applying the same scheme is correct when
+    -- the bundled palette in colors/<name>.lua has changed underneath us.
+    -- Burst protection comes from schedule_reload's 1500ms debounce.
     state.last_applied_opts_hash = nil -- invalidate aether-opts dedup; different path
     reload_via_colorscheme(action.name)
     return
@@ -294,12 +295,13 @@ local function reload_with_fresh_opts(source_path)
 
   local opts = action.opts
 
-  -- Cross-source dedup: skip if the resolved opts match the last applied
-  -- ones. Catches both repeat fs_event reloads (CLI rewrites the file
-  -- several times with identical content) and the LazyReload event that
-  -- lazy.nvim fires for the same write.
+  -- Content dedup for the external file watcher: collapses repeat reloads
+  -- when the CLI rewrites the file with identical bytes (and LazyReload
+  -- echoes the same write). Bypassed via `force` when the trigger is a
+  -- code reload (LazyReload aether), since aether's own source may have
+  -- changed even though `opts` are byte-identical.
   local new_hash = opts_hash(opts)
-  if new_hash == state.last_applied_opts_hash then
+  if not force and new_hash == state.last_applied_opts_hash then
     return
   end
   state.last_applied_opts_hash = new_hash
@@ -334,11 +336,13 @@ local function setup_lazy_reload_autocmd(augroup)
         return
       end
 
-      -- Defer to ensure lazy.nvim completes its reload process
-      -- Note: We check if the config has aether inside reload_with_fresh_opts()
-      -- instead of checking is_aether_active() here, because we want to reload
-      -- when switching TO aether, not just when aether is already active
-      vim.defer_fn(reload_with_fresh_opts, LAZY_RELOAD_DELAY_MS)
+      -- Defer to ensure lazy.nvim completes its reload process. Force the
+      -- reload (skip opts-hash dedup): LazyReload means aether's own source
+      -- files were reloaded, so the rendered output can differ even when
+      -- `opts` are byte-identical to the last applied set.
+      vim.defer_fn(function()
+        reload_with_fresh_opts(nil, true)
+      end, LAZY_RELOAD_DELAY_MS)
     end,
     desc = "Reload aether theme when lazy.nvim detects changes",
   })
