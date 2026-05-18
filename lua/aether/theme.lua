@@ -16,7 +16,9 @@ function M.setup(opts)
     vim.cmd.hi("clear")
   end
 
-  vim.o.termguicolors = true
+  if opts.terminal_colors then
+    vim.o.termguicolors = true
+  end
   vim.g.colors_name = opts.name
 
   -- Apply highlight groups

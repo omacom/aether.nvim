@@ -61,19 +61,16 @@ function M.setup(options)
   M.options = vim.tbl_deep_extend("force", {}, M.defaults, options or {})
 end
 
----Extend current options with overrides
+---Extend current options with overrides. Falls back to defaults when
+---`setup` has not been called yet.
 ---@param opts? aether.Config
 ---@return aether.Config
 function M.extend(opts)
-  return opts and vim.tbl_deep_extend("force", {}, M.options or M.defaults, opts) or M.options or M.defaults
+  local base = M.options or M.defaults
+  if not opts then
+    return base
+  end
+  return vim.tbl_deep_extend("force", {}, base, opts)
 end
-
-setmetatable(M, {
-  __index = function(_, k)
-    if k == "options" then
-      return M.defaults
-    end
-  end,
-})
 
 return M

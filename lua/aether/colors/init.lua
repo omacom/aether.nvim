@@ -68,12 +68,12 @@ local palette = {
   bright_purple = "#a68eba",
 }
 
----Setup the color palette
+---Setup the color palette. Caller is expected to pass an already-
+---resolved `aether.Config` (e.g. via `aether.config.extend`); this
+---function does not re-extend.
 ---@param opts aether.Config
 ---@return ColorScheme
 function M.setup(opts)
-  opts = require("aether.config").extend(opts)
-
   ---@class ColorScheme: aether.Palette
   local colors = vim.deepcopy(palette)
 

@@ -55,9 +55,28 @@ function M.setup(colors, opts)
   ret = vim.tbl_deep_extend("force", ret, get("markdown", colors, opts))
   ret = vim.tbl_deep_extend("force", ret, get("git", colors, opts))
 
-  -- Load plugin groups based on configuration
+  -- Load plugin groups based on configuration. Three modes:
+  --   * `all = true`  - load every integration unless explicitly disabled.
+  --   * `auto = true` - load only when the plugin is actually loaded
+  --                     (package.loaded[plugin] is truthy) unless
+  --                     explicitly disabled.
+  --   * neither       - load only integrations explicitly opted in via
+  --                     `plugins[name] = true`.
   for plugin, group_name in pairs(M.plugins) do
-    if opts.plugins.all or (opts.plugins[plugin] ~= false) then
+    local explicit = opts.plugins[plugin]
+    local enabled
+    if explicit == false then
+      enabled = false
+    elseif explicit == true then
+      enabled = true
+    elseif opts.plugins.all then
+      enabled = true
+    elseif opts.plugins.auto then
+      enabled = package.loaded[plugin] ~= nil
+    else
+      enabled = false
+    end
+    if enabled then
       ret = vim.tbl_deep_extend("force", ret, get(group_name, colors, opts))
     end
   end

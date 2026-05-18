@@ -46,8 +46,6 @@ _G.__aether_hotreload_state = _G.__aether_hotreload_state or {
   last_applied_opts_hash = nil,
 }
 local state = _G.__aether_hotreload_state
-state.fs_event_handles = state.fs_event_handles or {}
-state.pending_reload_timers = state.pending_reload_timers or {}
 
 --- Path that delegates to userland on change instead of applying opts.
 --- The user's LazyReload handler (e.g.
@@ -108,7 +106,10 @@ end
 
 --- Trigger post-reload updates
 local function trigger_post_reload_events()
-  vim.api.nvim_exec_autocmds("ColorScheme", { pattern = "aether", modeline = false })
+  vim.api.nvim_exec_autocmds("ColorScheme", {
+    pattern = vim.g.colors_name or "aether",
+    modeline = false,
+  })
   vim.cmd("redraw!")
 end
 
@@ -279,7 +280,6 @@ local function reload_with_fresh_opts(source_path)
   if new_hash == state.last_applied_opts_hash then
     return
   end
-  state.last_applied_opts_hash = new_hash
 
   local was_active = is_aether_active()
 
@@ -287,9 +287,13 @@ local function reload_with_fresh_opts(source_path)
   clear_highlights()
 
   if not load_theme(opts) then
+    -- Do not commit the hash: if load failed, the next identical-bytes
+    -- write would dedup against a hash whose effects were never applied,
+    -- silently dropping the retry.
     return
   end
 
+  state.last_applied_opts_hash = new_hash
   trigger_post_reload_events()
 
   if was_active then

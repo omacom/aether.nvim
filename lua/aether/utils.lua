@@ -54,19 +54,32 @@ function M.blend_fg(hex, amount, fg)
   return M.blend(hex, amount, fg or M.fg)
 end
 
----Resolve style tables in highlight definitions
+---Resolve style tables in highlight definitions. Builds a fresh groups
+---table so the per-plugin tables exported from `groups/*.lua` are never
+---mutated - those are owned by `package.loaded[...]` and reused across
+---reload cycles. Mutating them would strip `style` (italic/bold etc.)
+---on every subsequent setup call.
 ---@param groups table<string, aether.Highlight> Highlight groups
 ---@return table<string, vim.api.keyset.highlight>
 function M.resolve(groups)
-  for _, hl in pairs(groups) do
+  local resolved = {}
+  for name, hl in pairs(groups) do
     if type(hl) == "table" and type(hl.style) == "table" then
-      for k, v in pairs(hl.style) do
-        hl[k] = v
+      local merged = {}
+      for k, v in pairs(hl) do
+        if k ~= "style" then
+          merged[k] = v
+        end
       end
-      hl.style = nil
+      for k, v in pairs(hl.style) do
+        merged[k] = v
+      end
+      resolved[name] = merged
+    else
+      resolved[name] = hl
     end
   end
-  return groups
+  return resolved
 end
 
 return M
