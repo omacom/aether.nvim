@@ -10,8 +10,11 @@ local M = {}
 ---@return aether.Config opts
 function M.load(opts)
   opts = require("aether.config").extend(opts)
-  require("aether.hotreload").setup()
-  return require("aether.theme").setup(opts)
+  local hotreload = require("aether.hotreload")
+  hotreload.setup()
+  local colors, groups, final_opts = require("aether.theme").setup(opts)
+  hotreload.notify_engine_loaded()
+  return colors, groups, final_opts
 end
 
 ---Configure aether

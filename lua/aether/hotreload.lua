@@ -46,8 +46,15 @@ _G.__aether_hotreload_state = _G.__aether_hotreload_state or {
   -- Hash of the opts last applied to the colorscheme. Used to dedup reloads
   -- across ALL trigger sources (fs_event, LazyReload, manual).
   last_applied_opts_hash = nil,
+  -- Last colors_name observed immediately after aether.load() ran. Used so
+  -- derivative colorschemes (e.g. hackerman) that call aether.load() from
+  -- their colors/<name>.lua still count as "aether active" even though
+  -- g:colors_name != "aether".
+  engine_colors_name = nil,
 }
 local state = _G.__aether_hotreload_state
+state.fs_event_handles = state.fs_event_handles or {}
+state.pending_reload_timers = state.pending_reload_timers or {}
 
 --- Hash an opts table by its inspected representation. Cheap enough to run
 --- on every reload candidate and stable across identical tables.
@@ -57,10 +64,25 @@ local function opts_hash(opts)
   return vim.fn.sha256(vim.inspect(opts))
 end
 
---- Check if aether is the currently active colorscheme
+--- Check if aether is the engine behind the currently active colorscheme.
+--- True when g:colors_name is "aether" (direct) OR when it matches the
+--- name observed at the end of the most recent aether.load() call (a
+--- derivative scheme like hackerman whose colors/<name>.lua delegates to
+--- aether.load).
 --- @return boolean
 local function is_aether_active()
-  return vim.g.colors_name == "aether"
+  if vim.g.colors_name == "aether" then
+    return true
+  end
+  return vim.g.colors_name ~= nil
+    and state.engine_colors_name ~= nil
+    and state.engine_colors_name == vim.g.colors_name
+end
+
+--- Record that aether.load() just finished, with whatever colors_name is
+--- now in effect. Called from aether.load() via the exported notify hook.
+local function notify_engine_loaded()
+  state.engine_colors_name = vim.g.colors_name
 end
 
 -- Modules that must survive a hotreload cycle. Clearing aether.hotreload
@@ -123,46 +145,82 @@ local function load_theme(opts)
   return true
 end
 
---- Check if the theme spec is for aether
---- @param theme_spec table Theme specification
---- @return boolean
-local function is_aether_theme(theme_spec)
-  if not theme_spec or not theme_spec[1] then
-    return false
+--- Find the first entry in a lazy.nvim plugin spec list whose plugin name
+--- (positional [1] or `name=` field) matches a Lua pattern. Returns the
+--- entry or nil.
+--- @param theme_spec table
+--- @param pattern string
+--- @return table|nil
+local function find_spec_entry(theme_spec, pattern)
+  if type(theme_spec) ~= "table" then
+    return nil
   end
-
-  local plugin_name = theme_spec[1][1] or theme_spec[1].name
-  return plugin_name and plugin_name:match("aether")
+  for _, entry in ipairs(theme_spec) do
+    if type(entry) == "table" then
+      local plugin_name = entry[1] or entry.name
+      if type(plugin_name) == "string" and plugin_name:match(pattern) then
+        return entry
+      end
+    end
+  end
+  return nil
 end
 
---- Get fresh theme options from lazy.nvim config
---- @return table|nil opts Theme options or nil if not found
-local function get_theme_opts()
+--- Resolve a parsed lazy.nvim plugin spec to a reload action.
+--- Two recognised shapes:
+---   1. Direct  - contains an aether.nvim entry with `opts = {...}`. The
+---      reload applies those opts via aether.setup + aether.load.
+---   2. Indirect - contains a LazyVim entry with `opts.colorscheme = "X"`.
+---      The reload re-runs `:colorscheme X`, which fires colors/X.lua and
+---      lets that file call aether.load() with whatever palette it bundles
+---      (e.g. hackerman.nvim's colors/hackerman.lua).
+--- @param theme_spec table
+--- @return table|nil action { kind = "opts", opts = table } or { kind = "colorscheme", name = string }
+local function resolve_reload_action(theme_spec)
+  local aether_entry = find_spec_entry(theme_spec, "aether")
+  if aether_entry and type(aether_entry.opts) == "table" then
+    return { kind = "opts", opts = aether_entry.opts }
+  end
+
+  local lazyvim_entry = find_spec_entry(theme_spec, "LazyVim")
+  if lazyvim_entry
+    and type(lazyvim_entry.opts) == "table"
+    and type(lazyvim_entry.opts.colorscheme) == "string"
+  then
+    return { kind = "colorscheme", name = lazyvim_entry.opts.colorscheme }
+  end
+
+  return nil
+end
+
+--- Resolve a reload action from the local lazy.nvim plugins.theme module.
+--- @return table|nil action
+local function get_reload_action()
   package.loaded["plugins.theme"] = nil
 
   local ok, theme_spec = pcall(require, "plugins.theme")
-  if not ok or not is_aether_theme(theme_spec) then
+  if not ok then
     return nil
   end
 
-  return theme_spec[1].opts
+  return resolve_reload_action(theme_spec)
 end
 
---- Get fresh theme options by executing an external lazy spec file directly.
+--- Resolve a reload action by executing an external lazy spec file directly.
 --- Used when the aether/omarchy CLI rewrites the spec on disk.
 --- @param path string Absolute path to a lazy.nvim plugin spec file
---- @return table|nil opts Theme options or nil if file is missing/invalid
-local function get_theme_opts_from_file(path)
+--- @return table|nil action
+local function get_reload_action_from_file(path)
   if vim.fn.filereadable(path) ~= 1 then
     return nil
   end
 
   local ok, theme_spec = pcall(dofile, path)
-  if not ok or type(theme_spec) ~= "table" or not is_aether_theme(theme_spec) then
+  if not ok then
     return nil
   end
 
-  return theme_spec[1].opts
+  return resolve_reload_action(theme_spec)
 end
 
 --- Reload the aether colorscheme with current configuration
@@ -182,16 +240,59 @@ local function reload_colorscheme()
   end)
 end
 
+--- Reload by delegating to Neovim's colorscheme mechanism. The named
+--- colors/<name>.lua is responsible for calling aether.load() with its
+--- bundled palette. Used for indirect specs (e.g. LazyVim drives
+--- :colorscheme hackerman, hackerman.nvim's colors/hackerman.lua calls
+--- aether.load with hackerman's palette).
+--- @param name string Colorscheme name to apply
+local function reload_via_colorscheme(name)
+  local was_active = is_aether_active()
+
+  clear_aether_modules(true)
+  clear_highlights()
+
+  local ok, err = pcall(vim.cmd.colorscheme, name)
+  if not ok then
+    vim.notify(
+      ("aether.nvim: failed to apply colorscheme %s (%s)"):format(name, err or "unknown"),
+      vim.log.levels.ERROR
+    )
+    return
+  end
+
+  trigger_post_reload_events()
+
+  if was_active then
+    vim.notify(("aether.nvim reloaded via %s"):format(name), vim.log.levels.INFO)
+  else
+    vim.notify(("aether.nvim loaded via %s"):format(name), vim.log.levels.INFO)
+  end
+end
+
 --- Reload the aether colorscheme with fresh options from config
 --- This clears ALL modules including config and reloads with new options
 --- This works both when aether is active (reload) and when switching to aether (load)
 --- @param source_path string|nil Optional path to read opts from directly; falls back to plugins.theme
 local function reload_with_fresh_opts(source_path)
-  local opts = source_path and get_theme_opts_from_file(source_path) or get_theme_opts()
-  if not opts then
-    -- Theme is not aether or failed to load, skip reload
+  local action = source_path and get_reload_action_from_file(source_path) or get_reload_action()
+  if not action then
+    -- Spec isn't recognised (not aether, no LazyVim colorscheme entry).
     return
   end
+
+  if action.kind == "colorscheme" then
+    -- Dedup against the running scheme. Re-applying the same scheme when the
+    -- spec file is rewritten with identical content would be pointless churn.
+    if vim.g.colors_name == action.name then
+      return
+    end
+    state.last_applied_opts_hash = nil -- invalidate aether-opts dedup; different path
+    reload_via_colorscheme(action.name)
+    return
+  end
+
+  local opts = action.opts
 
   -- Cross-source dedup: skip if the resolved opts match the last applied
   -- ones. Catches both repeat fs_event reloads (CLI rewrites the file
@@ -299,11 +400,12 @@ local function schedule_reload(path)
   end, EXTERNAL_RELOAD_DELAY_MS)
 end
 
---- Start a libuv fs_event watcher on a single path.
+--- Start a libuv fs_event watcher on a single file path.
 --- Re-arms itself on every event because atomic writes (write-temp + rename)
 --- swap the inode and would otherwise leave the original watcher stranded.
---- Also watches the parent directory so a deleted-then-recreated file is
---- still picked up (inotify on the inode alone would miss this).
+--- No-op when the file is not readable; the directory watcher set up by
+--- start_fs_watch_dir is responsible for re-arming this once the file
+--- appears.
 --- @param path string Absolute path to watch
 local function start_fs_watch(path)
   if not uv or not uv.new_fs_event then
@@ -347,13 +449,131 @@ local function start_fs_watch(path)
   end
 end
 
+--- Start a libuv fs_event watcher on a directory. Fires when any entry in
+--- the directory is created, renamed, deleted, or modified. Each tracked
+--- file gets its individual file watcher re-armed and a reload scheduled
+--- whenever an event names it (or names anything, if filtering is disabled).
+---
+--- Used for two scenarios:
+---   1. Parent dir of a theme spec file - catches creation when the file
+---      didn't exist at nvim startup, and the rename half of an atomic
+---      write that left the file watcher pointed at a stale inode.
+---   2. ~/.config/omarchy/ itself - catches `omarchy theme set <name>`
+---      retargeting the `current` symlink so the resolved theme spec
+---      changes underneath us. inotify on the resolved path alone would
+---      not fire for this.
+---
+--- @param dir string Absolute directory path to watch
+--- @param tracked_files string[] List of absolute file paths to re-arm and reload on dir events
+--- @param filter_basenames string[]|nil Optional basenames; if set, only events naming one of these trigger action
+local function start_fs_watch_dir(dir, tracked_files, filter_basenames)
+  if not uv or not uv.new_fs_event then
+    return
+  end
+
+  stop_fs_watch(dir)
+
+  if vim.fn.isdirectory(dir) ~= 1 then
+    return
+  end
+
+  local handle = uv.new_fs_event()
+  if not handle then
+    return
+  end
+
+  local filter_set
+  if filter_basenames then
+    filter_set = {}
+    for _, name in ipairs(filter_basenames) do
+      filter_set[name] = true
+    end
+  end
+
+  local function on_change(_, filename)
+    if filter_set and filename and not filter_set[filename] then
+      return
+    end
+
+    for _, target in ipairs(tracked_files) do
+      start_fs_watch(target) -- no-op if file still doesn't exist
+      schedule_reload(target)
+    end
+  end
+
+  local ok, err = handle:start(dir, {}, vim.schedule_wrap(on_change))
+  if ok == 0 then
+    state.fs_event_handles[dir] = handle
+  else
+    vim.schedule(function()
+      vim.notify(
+        ("aether.nvim: failed to watch dir %s (%s)"):format(dir, err or "unknown"),
+        vim.log.levels.WARN
+      )
+    end)
+    handle:close()
+  end
+end
+
+--- Group tracked files by their parent directory so one dir watcher covers
+--- all targets sharing a parent (cheap when EXTERNAL_THEME_PATHS contains
+--- multiple files under the same dir).
+--- @param paths string[]
+--- @return table<string, string[]> dir -> list of paths whose parent is dir
+local function group_paths_by_parent(paths)
+  local grouped = {}
+  for _, path in ipairs(paths) do
+    local parent = vim.fn.fnamemodify(path, ":h")
+    grouped[parent] = grouped[parent] or {}
+    table.insert(grouped[parent], path)
+  end
+  return grouped
+end
+
+--- For paths routed through a known symlink (e.g. ~/.config/omarchy/current),
+--- return the symlink-anchor directory we must watch separately so symlink
+--- retargeting is observed. Currently hardcoded to the omarchy `current`
+--- symlink because it is the only known dynamic anchor.
+--- @param paths string[]
+--- @return string|nil dir, string[] tracked_files, string[] filter_basenames
+local function omarchy_symlink_anchor(paths)
+  local relevant = {}
+  for _, path in ipairs(paths) do
+    if path:find("/omarchy/current/", 1, true) then
+      table.insert(relevant, path)
+    end
+  end
+  if #relevant == 0 then
+    return nil, nil, nil
+  end
+  return vim.fn.expand("~/.config/omarchy"), relevant, { "current" }
+end
+
 --- Setup filesystem watchers for external theme spec files written by CLI
 --- tools (aether, omarchy). BufWritePost only fires for in-editor writes, so
---- we use libuv fs_event to catch out-of-process rewrites too. Stops any
---- pre-existing watchers first so re-setup replaces rather than stacks.
+--- we use libuv fs_event to catch out-of-process rewrites too. Three layers:
+---   1. Per-file watcher for low-latency in-place edits.
+---   2. Per-parent-dir watcher to catch file creation (file may not exist
+---      at startup) and inode swaps from atomic writes.
+---   3. Symlink-anchor watcher (e.g. ~/.config/omarchy/) to catch the
+---      `current` symlink being retargeted by `omarchy theme set`.
+--- Stops any pre-existing watchers first so re-setup replaces rather than stacks.
 local function setup_external_config_watcher()
   for _, path in ipairs(EXTERNAL_THEME_PATHS) do
-    start_fs_watch(path) -- internally calls stop_fs_watch first
+    start_fs_watch(path) -- no-op if file doesn't yet exist
+  end
+
+  for parent, paths_in_parent in pairs(group_paths_by_parent(EXTERNAL_THEME_PATHS)) do
+    local basenames = {}
+    for _, p in ipairs(paths_in_parent) do
+      table.insert(basenames, vim.fn.fnamemodify(p, ":t"))
+    end
+    start_fs_watch_dir(parent, paths_in_parent, basenames)
+  end
+
+  local omarchy_dir, omarchy_paths, omarchy_filter = omarchy_symlink_anchor(EXTERNAL_THEME_PATHS)
+  if omarchy_dir then
+    start_fs_watch_dir(omarchy_dir, omarchy_paths, omarchy_filter)
   end
 end
 
@@ -375,17 +595,37 @@ end
 local function setup_status_command()
   vim.api.nvim_create_user_command("AetherReloadStatus", function()
     local lines = { "aether.nvim hotreload status:" }
-    table.insert(lines, ("  colors_name = %s"):format(tostring(vim.g.colors_name)))
-    table.insert(lines, ("  uv backend  = %s"):format(uv == vim.uv and "vim.uv" or "vim.loop"))
-    for _, path in ipairs(EXTERNAL_THEME_PATHS) do
-      local readable = vim.fn.filereadable(path) == 1
+    table.insert(lines, ("  colors_name        = %s"):format(tostring(vim.g.colors_name)))
+    table.insert(lines, ("  engine_colors_name = %s"):format(tostring(state.engine_colors_name)))
+    table.insert(lines, ("  is_aether_active   = %s"):format(tostring(is_aether_active())))
+    table.insert(lines, ("  uv backend         = %s"):format(uv == vim.uv and "vim.uv" or "vim.loop"))
+
+    local function describe(path, kind)
       local handle = state.fs_event_handles[path]
       local active = handle and not handle:is_closing() or false
+      local extra
+      if kind == "file" then
+        extra = "readable=" .. tostring(vim.fn.filereadable(path) == 1)
+      else
+        extra = "isdir=" .. tostring(vim.fn.isdirectory(path) == 1)
+      end
       table.insert(
         lines,
-        ("  %s  readable=%s  watching=%s"):format(path, tostring(readable), tostring(active))
+        ("  [%s] %s  %s  watching=%s"):format(kind, path, extra, tostring(active))
       )
     end
+
+    for _, path in ipairs(EXTERNAL_THEME_PATHS) do
+      describe(path, "file")
+    end
+    for parent in pairs(group_paths_by_parent(EXTERNAL_THEME_PATHS)) do
+      describe(parent, "dir")
+    end
+    local omarchy_dir = omarchy_symlink_anchor(EXTERNAL_THEME_PATHS)
+    if omarchy_dir then
+      describe(omarchy_dir, "anchor")
+    end
+
     vim.notify(table.concat(lines, "\n"), vim.log.levels.INFO)
   end, { desc = "Show aether hotreload watcher status" })
 end
@@ -412,5 +652,7 @@ function M.setup()
   setup_reload_command()
   setup_status_command()
 end
+
+M.notify_engine_loaded = notify_engine_loaded
 
 return M
