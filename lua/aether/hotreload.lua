@@ -148,7 +148,7 @@ end
 --- aether-direct spec with opts. Used for files like the aether CLI's
 --- ~/.config/aether/theme/neovim.lua, where the file IS the source of
 --- truth for opts.
---- @param path string Absolute path to a lazy.nvim plugin spec file
+--- @param path string Absolute path to a lazy plugin spec file
 --- @return table|nil opts
 local function get_theme_opts_from_file(path)
   if vim.fn.filereadable(path) ~= 1 then
@@ -159,6 +159,88 @@ local function get_theme_opts_from_file(path)
     return nil
   end
   return theme_spec[1].opts
+end
+
+--- Extract the colorscheme name from a parsed lazy plugin spec by scanning
+--- for a LazyVim entry with `opts.colorscheme = "X"`. Returns nil when no
+--- such entry exists. This is how the omarchy file signals which scheme
+--- it wants nvim to be on.
+--- @param theme_spec table
+--- @return string|nil
+local function find_colorscheme_in_spec(theme_spec)
+  if type(theme_spec) ~= "table" then
+    return nil
+  end
+  for _, entry in ipairs(theme_spec) do
+    if type(entry) == "table" then
+      local plugin_name = entry[1] or entry.name
+      if type(plugin_name) == "string" and plugin_name:match("LazyVim") then
+        if type(entry.opts) == "table" and type(entry.opts.colorscheme) == "string" then
+          return entry.opts.colorscheme
+        end
+      end
+    end
+  end
+  return nil
+end
+
+--- Read the desired colorscheme name from an external lazy spec file.
+--- Returns nil if the file is missing, fails to evaluate, or has no
+--- LazyVim entry naming a colorscheme.
+--- @param path string
+--- @return string|nil
+local function get_colorscheme_from_file(path)
+  if vim.fn.filereadable(path) ~= 1 then
+    return nil
+  end
+  local ok, theme_spec = pcall(dofile, path)
+  if not ok then
+    return nil
+  end
+  return find_colorscheme_in_spec(theme_spec)
+end
+
+--- Apply a colorscheme by name, loading its plugin lazy-aware first so
+--- it works for `lazy = true` colorscheme plugins (e.g. hackerman.nvim
+--- listed in all-themes.lua). Preserves aether.config so the user's opts
+--- survive into colors/<name>.{lua,vim}, which typically calls
+--- aether.load() with no args.
+--- @param name string Colorscheme name
+local function apply_colorscheme(name)
+  if vim.g.colors_name == name then
+    -- Same scheme already active. Skipping avoids an unnecessary
+    -- highlight-clear flash.
+    return
+  end
+
+  local was_active = is_aether_active()
+
+  -- Lazy-aware load: if the plugin owning colors/<name>.{lua,vim} is
+  -- lazy-loaded, this puts it on rtp so the colorscheme command can find
+  -- it. No-op when the plugin is already loaded or lazy isn't installed.
+  pcall(function()
+    require("lazy.core.loader").colorscheme(name)
+  end)
+
+  clear_aether_modules(false) -- keep aether.config: colors/aether.vim relies on it
+  clear_highlights()
+
+  local ok, err = pcall(vim.cmd.colorscheme, name)
+  if not ok then
+    vim.notify(
+      ("aether.nvim: failed to apply colorscheme %s (%s)"):format(name, err or "unknown"),
+      vim.log.levels.ERROR
+    )
+    return
+  end
+
+  trigger_post_reload_events()
+
+  if was_active then
+    vim.notify(("aether.nvim switched to %s"):format(name), vim.log.levels.INFO)
+  else
+    vim.notify(("aether.nvim activated %s"):format(name), vim.log.levels.INFO)
+  end
 end
 
 --- Reload the aether colorscheme using the current saved config.
@@ -211,17 +293,19 @@ local function reload_with_fresh_opts(source_path)
   end
 end
 
---- Dispatch an external-path change to the right handler. Paths under
---- omarchy's `current` tree fire `User LazyReload` so a user-side
---- handler (e.g. lua/plugins/omarchy-theme-hotreload.lua) drives
---- colorscheme switching and lazy-aware plugin loading. All other paths
---- (the aether CLI's own file) apply opts directly, but only when aether
---- is the active scheme - otherwise applying opts would forcibly switch
---- the user away from a different colorscheme.
+--- Dispatch an external-path change to the right handler. The omarchy
+--- file signals "which colorscheme should nvim be on" via its LazyVim
+--- entry - aether reads that, lazy-loads the plugin if needed, and
+--- applies the scheme. The aether CLI's own file is the source of
+--- aether opts and goes through reload_with_fresh_opts (only while
+--- aether is already active, to avoid forcing a switch).
 --- @param path string Absolute path that changed
 local function on_external_path_changed(path)
   if path == OMARCHY_THEME_PATH then
-    vim.api.nvim_exec_autocmds("User", { pattern = "LazyReload", data = "aether" })
+    local name = get_colorscheme_from_file(path)
+    if name then
+      apply_colorscheme(name)
+    end
     return
   end
   if not is_aether_active() then
@@ -485,7 +569,7 @@ local function setup_status_command()
     table.insert(lines, ("  colors_name      = %s"):format(tostring(vim.g.colors_name)))
     table.insert(lines, ("  is_aether_active = %s"):format(tostring(is_aether_active())))
     table.insert(lines, ("  uv backend       = %s"):format(uv == vim.uv and "vim.uv" or "vim.loop"))
-    table.insert(lines, ("  omarchy delegate = %s -> User LazyReload"):format(OMARCHY_THEME_PATH))
+    table.insert(lines, ("  omarchy target   = %s"):format(tostring(get_colorscheme_from_file(OMARCHY_THEME_PATH))))
 
     local function describe(path, kind)
       local handle = state.fs_event_handles[path]
