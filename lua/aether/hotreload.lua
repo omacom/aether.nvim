@@ -250,15 +250,21 @@ local function reload_colorscheme()
 end
 
 --- Reload by delegating to Neovim's colorscheme mechanism. The named
---- colors/<name>.lua is responsible for calling aether.load() with its
---- bundled palette. Used for indirect specs (e.g. LazyVim drives
+--- colors/<name>.{lua,vim} is responsible for calling aether.load() with
+--- its bundled palette. Used for indirect specs (e.g. LazyVim drives
 --- :colorscheme hackerman, hackerman.nvim's colors/hackerman.lua calls
 --- aether.load with hackerman's palette).
+---
+--- Preserves aether.config so the user's saved opts (from their initial
+--- aether.setup) survive into colors/aether.{lua,vim}, which calls
+--- aether.load() with no args and depends on the saved config. Clearing
+--- it would silently fall back to defaults on every omarchy switch back
+--- to plain aether.
 --- @param name string Colorscheme name to apply
 local function reload_via_colorscheme(name)
   local was_active = is_aether_active()
 
-  clear_aether_modules(true)
+  clear_aether_modules(false) -- keep aether.config: aether.load() with no args reads it
   clear_highlights()
 
   local ok, err = pcall(vim.cmd.colorscheme, name)
