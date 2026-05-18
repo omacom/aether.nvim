@@ -202,9 +202,15 @@ end
 
 --- Apply a colorscheme by name, loading its plugin lazy-aware first so
 --- it works for `lazy = true` colorscheme plugins (e.g. hackerman.nvim
---- listed in all-themes.lua). Preserves aether.config so the user's opts
---- survive into colors/<name>.{lua,vim}, which typically calls
---- aether.load() with no args.
+--- listed in all-themes.lua). Preserves aether.config so the user's
+--- saved overrides survive a round-trip through a derivative scheme.
+---
+--- Caveat: derivative schemes are responsible for using the same color
+--- keys as the running aether version. If a derivative passes opts in a
+--- foreign convention (e.g. base16 keys against aether v3 which expects
+--- named keys), aether's resolver will ignore them and the derivative's
+--- intended palette won't apply. That's a plugin-compat issue, not
+--- something the hot-reload layer can paper over.
 --- @param name string Colorscheme name
 local function apply_colorscheme(name)
   if vim.g.colors_name == name then
@@ -222,7 +228,7 @@ local function apply_colorscheme(name)
     require("lazy.core.loader").colorscheme(name)
   end)
 
-  clear_aether_modules(false) -- keep aether.config: colors/aether.vim relies on it
+  clear_aether_modules(false) -- preserve M.options across the switch
   clear_highlights()
 
   local ok, err = pcall(vim.cmd.colorscheme, name)
