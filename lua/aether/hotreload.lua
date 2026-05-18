@@ -299,25 +299,39 @@ local function reload_with_fresh_opts(source_path)
   end
 end
 
---- Dispatch an external-path change to the right handler. The omarchy
---- file signals "which colorscheme should nvim be on" via its LazyVim
---- entry - aether reads that, lazy-loads the plugin if needed, and
---- applies the scheme. The aether CLI's own file is the source of
---- aether opts and goes through reload_with_fresh_opts (only while
---- aether is already active, to avoid forcing a switch).
+--- Dispatch an external-path change to the right handler.
+---
+--- For the omarchy file, prefer the file's aether-direct opts when its
+--- first entry is aether (this is the omarchy "aether-themed" case):
+--- apply them directly so the omarchy theme's bundled palette becomes
+--- active. This matches the pre-refactor behavior the user relies on -
+--- omarchy's neovim.lua IS the source of truth for aether colors.
+--- Falls back to colorscheme delegation only when no aether-direct
+--- entry is present (e.g. hackerman omarchy theme, where the first
+--- entry is bjarneo/hackerman.nvim and the LazyVim entry names
+--- "hackerman" as the colorscheme).
+---
+--- The aether CLI's own file (~/.config/aether/theme/neovim.lua) is
+--- always aether-direct and applies opts the same way, but gated by
+--- is_aether_active so the CLI doesn't force a switch from another
+--- colorscheme.
 --- @param path string Absolute path that changed
 local function on_external_path_changed(path)
+  local opts = get_theme_opts_from_file(path)
+  if opts then
+    if path ~= OMARCHY_THEME_PATH and not is_aether_active() then
+      return
+    end
+    reload_with_fresh_opts(path)
+    return
+  end
+
   if path == OMARCHY_THEME_PATH then
     local name = get_colorscheme_from_file(path)
     if name then
       apply_colorscheme(name)
     end
-    return
   end
-  if not is_aether_active() then
-    return
-  end
-  reload_with_fresh_opts(path)
 end
 
 --- Setup autocmd for plugin development file changes
