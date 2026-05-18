@@ -4,12 +4,10 @@
 
 local M = {}
 
--- Configuration constants
-local LAZY_RELOAD_DELAY_MS = 100
--- The aether CLI commonly rewrites neovim.lua several times per theme
--- generation (palette write, blueprint pass, post-process). A 1500 ms
--- trailing-edge window comfortably absorbs that burst while still feeling
--- responsive to the user.
+-- Configuration constants. The aether CLI commonly rewrites neovim.lua
+-- several times per theme generation (palette write, blueprint pass,
+-- post-process). A 1500 ms trailing-edge window comfortably absorbs that
+-- burst while still feeling responsive.
 local EXTERNAL_RELOAD_DELAY_MS = 1500
 local FS_EVENT_REARM_DELAY_MS = 50
 
@@ -44,17 +42,19 @@ _G.__aether_hotreload_state = _G.__aether_hotreload_state or {
   -- burst of inotify events collapses to a single reload.
   pending_reload_timers = {},
   -- Hash of the opts last applied to the colorscheme. Used to dedup reloads
-  -- across ALL trigger sources (fs_event, LazyReload, manual).
+  -- when the same opts arrive from multiple trigger paths.
   last_applied_opts_hash = nil,
-  -- Last colors_name observed immediately after aether.load() ran. Used so
-  -- derivative colorschemes (e.g. hackerman) that call aether.load() from
-  -- their colors/<name>.lua still count as "aether active" even though
-  -- g:colors_name != "aether".
-  engine_colors_name = nil,
 }
 local state = _G.__aether_hotreload_state
 state.fs_event_handles = state.fs_event_handles or {}
 state.pending_reload_timers = state.pending_reload_timers or {}
+
+--- Path that delegates to userland on change instead of applying opts.
+--- The user's LazyReload handler (e.g.
+--- ~/.config/nvim/lua/plugins/omarchy-theme-hotreload.lua) is the right
+--- place to drive colorscheme switching, lazy-aware plugin loading, etc.
+--- Aether's watcher just fires `User LazyReload` here as a notification.
+local OMARCHY_THEME_PATH = vim.fn.expand("~/.config/omarchy/current/theme/neovim.lua")
 
 --- Hash an opts table by its inspected representation. Cheap enough to run
 --- on every reload candidate and stable across identical tables.
@@ -64,25 +64,10 @@ local function opts_hash(opts)
   return vim.fn.sha256(vim.inspect(opts))
 end
 
---- Check if aether is the engine behind the currently active colorscheme.
---- True when g:colors_name is "aether" (direct) OR when it matches the
---- name observed at the end of the most recent aether.load() call (a
---- derivative scheme like hackerman whose colors/<name>.lua delegates to
---- aether.load).
+--- Check if aether is the currently active colorscheme
 --- @return boolean
 local function is_aether_active()
-  if vim.g.colors_name == "aether" then
-    return true
-  end
-  return vim.g.colors_name ~= nil
-    and state.engine_colors_name ~= nil
-    and state.engine_colors_name == vim.g.colors_name
-end
-
---- Record that aether.load() just finished, with whatever colors_name is
---- now in effect. Called from aether.load() via the exported notify hook.
-local function notify_engine_loaded()
-  state.engine_colors_name = vim.g.colors_name
+  return vim.g.colors_name == "aether"
 end
 
 -- Modules that must survive a hotreload cycle. Clearing aether.hotreload
@@ -145,185 +130,72 @@ local function load_theme(opts)
   return true
 end
 
---- Find the first entry in a lazy.nvim plugin spec list whose plugin name
---- (positional [1] or `name=` field) matches a Lua pattern. Returns the
---- entry or nil.
+--- Check if a parsed lazy.nvim spec describes aether (first entry's
+--- plugin name contains "aether"). Matches the aether CLI's external
+--- file shape `{ { "bjarneo/aether.nvim", opts = {...} } }`.
 --- @param theme_spec table
---- @param pattern string
---- @return table|nil
-local function find_spec_entry(theme_spec, pattern)
-  if type(theme_spec) ~= "table" then
-    return nil
+--- @return boolean
+local function is_aether_theme(theme_spec)
+  if type(theme_spec) ~= "table" or type(theme_spec[1]) ~= "table" then
+    return false
   end
-  for _, entry in ipairs(theme_spec) do
-    if type(entry) == "table" then
-      local plugin_name = entry[1] or entry.name
-      if type(plugin_name) == "string" and plugin_name:match(pattern) then
-        return entry
-      end
-    end
-  end
-  return nil
+  local plugin_name = theme_spec[1][1] or theme_spec[1].name
+  return type(plugin_name) == "string" and plugin_name:match("aether") ~= nil
 end
 
---- Resolve a parsed lazy.nvim plugin spec to a reload action.
---- Two recognised shapes, checked in this order:
----   1. Indirect - LazyVim entry with `opts.colorscheme = "X"`. Reload by
----      running `:colorscheme X`, which fires colors/X.{lua,vim} and lets
----      that file call aether.load() with no args, falling back to opts
----      already saved via the user's aether.setup(...). This is what we
----      want for omarchy theme switches: the local plugins.theme.lua
----      config keeps winning instead of the external file's opts.
----   2. Direct - aether.nvim entry with `opts = {...}`. Reload applies
----      those opts via aether.setup + aether.load. Used when no LazyVim
----      indirect handle is present (e.g. the aether CLI's own external
----      file at ~/.config/aether/theme/neovim.lua, where the file IS the
----      intended source of truth for opts).
----
---- Order matters: omarchy theme files contain both entries, so checking
---- LazyVim first ensures the user's local opts are honoured rather than
---- being overwritten by the theme-bundled aether opts on every switch.
---- @param theme_spec table
---- @return table|nil action { kind = "opts", opts = table } or { kind = "colorscheme", name = string }
-local function resolve_reload_action(theme_spec)
-  local lazyvim_entry = find_spec_entry(theme_spec, "LazyVim")
-  if lazyvim_entry
-    and type(lazyvim_entry.opts) == "table"
-    and type(lazyvim_entry.opts.colorscheme) == "string"
-  then
-    return { kind = "colorscheme", name = lazyvim_entry.opts.colorscheme }
-  end
-
-  local aether_entry = find_spec_entry(theme_spec, "aether")
-  if aether_entry and type(aether_entry.opts) == "table" then
-    return { kind = "opts", opts = aether_entry.opts }
-  end
-
-  return nil
-end
-
---- Resolve a reload action from the local lazy.nvim plugins.theme module.
---- @return table|nil action
-local function get_reload_action()
-  package.loaded["plugins.theme"] = nil
-
-  local ok, theme_spec = pcall(require, "plugins.theme")
-  if not ok then
-    return nil
-  end
-
-  return resolve_reload_action(theme_spec)
-end
-
---- Resolve a reload action by executing an external lazy spec file directly.
---- Used when the aether/omarchy CLI rewrites the spec on disk.
+--- Read aether opts from an external lazy plugin spec file. Returns nil
+--- if the file is missing, fails to evaluate, or its first entry isn't an
+--- aether-direct spec with opts. Used for files like the aether CLI's
+--- ~/.config/aether/theme/neovim.lua, where the file IS the source of
+--- truth for opts.
 --- @param path string Absolute path to a lazy.nvim plugin spec file
---- @return table|nil action
-local function get_reload_action_from_file(path)
+--- @return table|nil opts
+local function get_theme_opts_from_file(path)
   if vim.fn.filereadable(path) ~= 1 then
     return nil
   end
-
   local ok, theme_spec = pcall(dofile, path)
-  if not ok then
+  if not ok or not is_aether_theme(theme_spec) then
     return nil
   end
-
-  return resolve_reload_action(theme_spec)
+  return theme_spec[1].opts
 end
 
---- Reload the aether colorscheme with current configuration
---- This preserves the existing config module to maintain user options
+--- Reload the aether colorscheme using the current saved config.
+--- Preserves aether.config so the user's opts survive. Used by the
+--- in-tree BufWritePost dev-file watcher.
 local function reload_colorscheme()
-  clear_aether_modules(false) -- Don't clear config
-
+  clear_aether_modules(false) -- keep aether.config
   vim.schedule(function()
     clear_highlights()
-
     if not load_theme() then
       return
     end
-
     trigger_post_reload_events()
     vim.notify("aether.nvim reloaded", vim.log.levels.INFO)
   end)
 end
 
---- Reload by delegating to Neovim's colorscheme mechanism. The named
---- colors/<name>.{lua,vim} is responsible for calling aether.load() with
---- its bundled palette. Used for indirect specs (e.g. LazyVim drives
---- :colorscheme hackerman, hackerman.nvim's colors/hackerman.lua calls
---- aether.load with hackerman's palette).
----
---- Preserves aether.config so the user's saved opts (from their initial
---- aether.setup) survive into colors/aether.{lua,vim}, which calls
---- aether.load() with no args and depends on the saved config. Clearing
---- it would silently fall back to defaults on every omarchy switch back
---- to plain aether.
---- @param name string Colorscheme name to apply
-local function reload_via_colorscheme(name)
-  local was_active = is_aether_active()
-
-  clear_aether_modules(false) -- keep aether.config: aether.load() with no args reads it
-  clear_highlights()
-
-  local ok, err = pcall(vim.cmd.colorscheme, name)
-  if not ok then
-    vim.notify(
-      ("aether.nvim: failed to apply colorscheme %s (%s)"):format(name, err or "unknown"),
-      vim.log.levels.ERROR
-    )
+--- Reload the aether colorscheme with fresh opts from an external file
+--- (e.g. the aether CLI writes new colors). Clears all modules including
+--- config and re-runs aether.setup with the new opts. Skips if the file's
+--- opts are byte-identical to the last applied set.
+--- @param source_path string Path to a lazy plugin spec file with an aether-direct entry
+local function reload_with_fresh_opts(source_path)
+  local opts = get_theme_opts_from_file(source_path)
+  if not opts then
     return
   end
 
-  trigger_post_reload_events()
-
-  if was_active then
-    vim.notify(("aether.nvim reloaded via %s"):format(name), vim.log.levels.INFO)
-  else
-    vim.notify(("aether.nvim loaded via %s"):format(name), vim.log.levels.INFO)
-  end
-end
-
---- Reload the aether colorscheme with fresh options from config
---- This clears ALL modules including config and reloads with new options
---- This works both when aether is active (reload) and when switching to aether (load)
---- @param source_path string|nil Optional path to read opts from directly; falls back to plugins.theme
---- @param source_path string|nil External file path; nil for in-process triggers (LazyReload, manual)
---- @param force boolean|nil When true, bypass the opts-hash dedup. Pass true from triggers where
----                          aether's source code may have changed but opts didn't (e.g. LazyReload).
-local function reload_with_fresh_opts(source_path, force)
-  local action = source_path and get_reload_action_from_file(source_path) or get_reload_action()
-  if not action then
-    -- Spec isn't recognised (not aether, no LazyVim colorscheme entry).
-    return
-  end
-
-  if action.kind == "colorscheme" then
-    -- No name-based dedup here: re-applying the same scheme is correct when
-    -- the bundled palette in colors/<name>.lua has changed underneath us.
-    -- Burst protection comes from schedule_reload's 1500ms debounce.
-    state.last_applied_opts_hash = nil -- invalidate aether-opts dedup; different path
-    reload_via_colorscheme(action.name)
-    return
-  end
-
-  local opts = action.opts
-
-  -- Content dedup for the external file watcher: collapses repeat reloads
-  -- when the CLI rewrites the file with identical bytes (and LazyReload
-  -- echoes the same write). Bypassed via `force` when the trigger is a
-  -- code reload (LazyReload aether), since aether's own source may have
-  -- changed even though `opts` are byte-identical.
   local new_hash = opts_hash(opts)
-  if not force and new_hash == state.last_applied_opts_hash then
+  if new_hash == state.last_applied_opts_hash then
     return
   end
   state.last_applied_opts_hash = new_hash
 
   local was_active = is_aether_active()
 
-  clear_aether_modules(true) -- Clear everything including config
+  clear_aether_modules(true) -- clear config too: load_theme(opts) re-runs aether.setup
   clear_highlights()
 
   if not load_theme(opts) then
@@ -339,28 +211,23 @@ local function reload_with_fresh_opts(source_path, force)
   end
 end
 
---- Setup autocmd for lazy.nvim reload events
---- @param augroup integer augroup id created with clear=true
-local function setup_lazy_reload_autocmd(augroup)
-  vim.api.nvim_create_autocmd("User", {
-    group = augroup,
-    pattern = "LazyReload",
-    callback = function(event)
-      -- Only handle aether plugin reloads
-      if event.data and event.data ~= "aether.nvim" and event.data ~= "aether" then
-        return
-      end
-
-      -- Defer to ensure lazy.nvim completes its reload process. Force the
-      -- reload (skip opts-hash dedup): LazyReload means aether's own source
-      -- files were reloaded, so the rendered output can differ even when
-      -- `opts` are byte-identical to the last applied set.
-      vim.defer_fn(function()
-        reload_with_fresh_opts(nil, true)
-      end, LAZY_RELOAD_DELAY_MS)
-    end,
-    desc = "Reload aether theme when lazy.nvim detects changes",
-  })
+--- Dispatch an external-path change to the right handler. Paths under
+--- omarchy's `current` tree fire `User LazyReload` so a user-side
+--- handler (e.g. lua/plugins/omarchy-theme-hotreload.lua) drives
+--- colorscheme switching and lazy-aware plugin loading. All other paths
+--- (the aether CLI's own file) apply opts directly, but only when aether
+--- is the active scheme - otherwise applying opts would forcibly switch
+--- the user away from a different colorscheme.
+--- @param path string Absolute path that changed
+local function on_external_path_changed(path)
+  if path == OMARCHY_THEME_PATH then
+    vim.api.nvim_exec_autocmds("User", { pattern = "LazyReload", data = "aether" })
+    return
+  end
+  if not is_aether_active() then
+    return
+  end
+  reload_with_fresh_opts(path)
 end
 
 --- Setup autocmd for plugin development file changes
@@ -412,10 +279,11 @@ local function schedule_reload(path)
 
   state.pending_reload_timers[path] = vim.defer_fn(function()
     state.pending_reload_timers[path] = nil
-    if not is_aether_active() then
-      return
-    end
-    reload_with_fresh_opts(path)
+    -- No is_aether_active() gate: the omarchy path delegates to userland
+    -- via User LazyReload, which the user's handler is responsible for
+    -- gating. The aether CLI path's apply-opts handler checks file shape
+    -- and dedups via opts hash, so a no-op trigger is cheap.
+    on_external_path_changed(path)
   end, EXTERNAL_RELOAD_DELAY_MS)
 end
 
@@ -614,10 +482,10 @@ end
 local function setup_status_command()
   vim.api.nvim_create_user_command("AetherReloadStatus", function()
     local lines = { "aether.nvim hotreload status:" }
-    table.insert(lines, ("  colors_name        = %s"):format(tostring(vim.g.colors_name)))
-    table.insert(lines, ("  engine_colors_name = %s"):format(tostring(state.engine_colors_name)))
-    table.insert(lines, ("  is_aether_active   = %s"):format(tostring(is_aether_active())))
-    table.insert(lines, ("  uv backend         = %s"):format(uv == vim.uv and "vim.uv" or "vim.loop"))
+    table.insert(lines, ("  colors_name      = %s"):format(tostring(vim.g.colors_name)))
+    table.insert(lines, ("  is_aether_active = %s"):format(tostring(is_aether_active())))
+    table.insert(lines, ("  uv backend       = %s"):format(uv == vim.uv and "vim.uv" or "vim.loop"))
+    table.insert(lines, ("  omarchy delegate = %s -> User LazyReload"):format(OMARCHY_THEME_PATH))
 
     local function describe(path, kind)
       local handle = state.fs_event_handles[path]
@@ -665,13 +533,10 @@ function M.setup()
 
   local augroup = vim.api.nvim_create_augroup("AetherHotreload", { clear = true })
 
-  setup_lazy_reload_autocmd(augroup)
   setup_dev_file_watcher(augroup)
   setup_external_config_watcher()
   setup_reload_command()
   setup_status_command()
 end
-
-M.notify_engine_loaded = notify_engine_loaded
 
 return M
