@@ -104,24 +104,59 @@ local function clear_highlights()
   vim.g.colors_name = nil
 end
 
---- Trigger post-reload updates. Fires ColorScheme so highlight-dependent
---- consumers (lualine, statusline modules, treesitter rainbow, ...) re-pull
---- their colors, then `User LazyReload` with data = "aether.nvim" to match
---- the event lazy.nvim emits after a plugin spec reload. Downstream handlers
---- (LazyVim's colorscheme glue, user autocmds in `~/.config/nvim/lua/plugins/`)
---- that key off LazyReload to redo per-plugin setup (e.g. snacks dashboard,
---- bufferline theme, fidget icons) get a chance to fire even though our
---- reload bypassed lazy.nvim's own change_detection flow.
-local function trigger_post_reload_events()
+--- Trigger post-reload updates.
+---
+--- 1. Fires `ColorScheme` so plugins with their own ColorScheme autocmds
+---    (bufferline, lualine, treesitter rainbow, indent-blankline, ...)
+---    re-derive highlights from the new palette. This is the actual lever
+---    that makes "everything refresh" - LazyVim itself has no colorscheme
+---    handler; plugins react to ColorScheme directly.
+---
+--- 2. For an external spec-file change, hand the file off to lazy.nvim's
+---    reloader (`lazy.manage.reloader.reload(...)`). That runs the same
+---    pipeline lazy.nvim's own change_detection runs on a 2s poll, but
+---    instantly via our libuv fs_event: re-parses the spec from disk and
+---    fires its native `User LazyReload` (no data) at the end. Without
+---    this, opts on non-aether entries in the same spec file (lualine
+---    theme, bufferline opts, snacks config, ...) are silently dropped
+---    because aether's own pipeline only reads `theme_spec[1].opts`.
+---
+--- 3. Falls back to firing `User LazyReload` ourselves (no data, matching
+---    lazy.nvim's emission shape) when lazy.nvim is not present or has no
+---    file context to reload (the BufWritePost dev-file path).
+---
+--- Note: lazy.nvim's reloader does NOT re-invoke each plugin's `config()`
+--- function - it only re-parses the spec. That short-circuit lives in
+--- `lazy/core/loader.lua` and applies to all change_detection callers,
+--- including lazy.nvim itself. Plugin refresh on theme change comes from
+--- the ColorScheme event, not from spec re-evaluation.
+---
+--- @param source_path string|nil Path to the spec file that triggered the
+---   reload, if any. When provided, lazy.nvim handles the LazyReload event.
+local function trigger_post_reload_events(source_path)
   vim.api.nvim_exec_autocmds("ColorScheme", {
     pattern = vim.g.colors_name or "aether",
     modeline = false,
   })
-  vim.api.nvim_exec_autocmds("User", {
-    pattern = "LazyReload",
-    data = "aether.nvim",
-    modeline = false,
-  })
+
+  local lazy_handled = false
+  if source_path then
+    local ok_mod, reloader = pcall(require, "lazy.manage.reloader")
+    if ok_mod and type(reloader) == "table" and type(reloader.reload) == "function" then
+      local ok = pcall(reloader.reload, { { file = source_path, what = "changed" } })
+      if ok then
+        lazy_handled = true
+      end
+    end
+  end
+
+  if not lazy_handled then
+    vim.api.nvim_exec_autocmds("User", {
+      pattern = "LazyReload",
+      modeline = false,
+    })
+  end
+
   vim.cmd("redraw!")
 end
 
@@ -225,7 +260,10 @@ end
 --- intended palette won't apply. That's a plugin-compat issue, not
 --- something the hot-reload layer can paper over.
 --- @param name string Colorscheme name
-local function apply_colorscheme(name)
+--- @param source_path string|nil Path of the spec file that triggered this,
+---   forwarded to lazy.nvim's reloader so sibling entries (lualine theme,
+---   bufferline opts, ...) get the spec re-parse too.
+local function apply_colorscheme(name, source_path)
   if vim.g.colors_name == name then
     -- Same scheme already active. Skipping avoids an unnecessary
     -- highlight-clear flash.
@@ -253,7 +291,7 @@ local function apply_colorscheme(name)
     return
   end
 
-  trigger_post_reload_events()
+  trigger_post_reload_events(source_path)
 
   if was_active then
     vim.notify(("aether.nvim switched to %s"):format(name), vim.log.levels.INFO)
@@ -306,7 +344,7 @@ local function reload_with_fresh_opts(source_path)
   end
 
   state.last_applied_opts_hash = new_hash
-  trigger_post_reload_events()
+  trigger_post_reload_events(source_path)
 
   if was_active then
     vim.notify("aether.nvim reloaded with new colors", vim.log.levels.INFO)
@@ -345,7 +383,7 @@ local function on_external_path_changed(path)
   if path == OMARCHY_THEME_PATH then
     local name = get_colorscheme_from_file(path)
     if name then
-      apply_colorscheme(name)
+      apply_colorscheme(name, path)
     end
   end
 end
