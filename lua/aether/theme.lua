@@ -30,9 +30,34 @@ function M.setup(opts)
   -- Apply terminal colors
   if opts.terminal_colors then
     M.terminal(colors)
+    M.refresh_terminals()
   end
 
   return colors, groups, opts
+end
+
+---Nudge running TUIs in :terminal buffers so they repaint with the new
+---palette. Vterm caches palette-resolved colors on each rendered cell,
+---so updating `vim.g.terminal_color_*` only takes effect once the program
+---inside the terminal redraws. SIGWINCH is the universal "please redraw"
+---signal for full-screen TUIs (lazygit, htop, fzf, k9s, ...). POSIX only;
+---no-op on Windows where SIGWINCH does not exist.
+function M.refresh_terminals()
+  local uv = vim.uv or vim.loop
+  if not uv or not uv.kill or vim.fn.has("unix") ~= 1 then
+    return
+  end
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_loaded(buf) and vim.bo[buf].buftype == "terminal" then
+      local chan = vim.b[buf].terminal_job_id
+      if type(chan) == "number" and chan > 0 then
+        local ok, pid = pcall(vim.fn.jobpid, chan)
+        if ok and type(pid) == "number" and pid > 0 then
+          pcall(uv.kill, pid, "sigwinch")
+        end
+      end
+    end
+  end
 end
 
 ---Set terminal colors
