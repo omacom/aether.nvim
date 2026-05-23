@@ -104,10 +104,22 @@ local function clear_highlights()
   vim.g.colors_name = nil
 end
 
---- Trigger post-reload updates
+--- Trigger post-reload updates. Fires ColorScheme so highlight-dependent
+--- consumers (lualine, statusline modules, treesitter rainbow, ...) re-pull
+--- their colors, then `User LazyReload` with data = "aether.nvim" to match
+--- the event lazy.nvim emits after a plugin spec reload. Downstream handlers
+--- (LazyVim's colorscheme glue, user autocmds in `~/.config/nvim/lua/plugins/`)
+--- that key off LazyReload to redo per-plugin setup (e.g. snacks dashboard,
+--- bufferline theme, fidget icons) get a chance to fire even though our
+--- reload bypassed lazy.nvim's own change_detection flow.
 local function trigger_post_reload_events()
   vim.api.nvim_exec_autocmds("ColorScheme", {
     pattern = vim.g.colors_name or "aether",
+    modeline = false,
+  })
+  vim.api.nvim_exec_autocmds("User", {
+    pattern = "LazyReload",
+    data = "aether.nvim",
     modeline = false,
   })
   vim.cmd("redraw!")
