@@ -30,33 +30,9 @@ function M.setup(opts)
   -- Apply terminal colors
   if opts.terminal_colors then
     M.terminal(colors)
-    M.refresh_terminals()
   end
 
   return colors, groups, opts
-end
-
----Make :terminal buffers reflect the new palette.
----
----Vterm caches its palette in the terminal struct at creation time, so
----`vim.g.terminal_color_*` updates do not flow into already-running
----terminals - SIGWINCH-triggered redraws repaint cells using the OLD
----cached palette. The only reliable fix is to recreate the terminal.
----
----For lazygit specifically (which LazyVim/snacks binds to <leader>gg and
----caches as a hidden buffer for toggle-style reuse), force-delete the
----buffer. The next <leader>gg invocation has nothing to reuse and spawns
----a fresh :terminal lazygit that boots vterm with the new palette from
----cell zero. Safe because lazygit's view is reconstructible from git.
-function M.refresh_terminals()
-  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
-    if vim.api.nvim_buf_is_loaded(buf) and vim.bo[buf].buftype == "terminal" then
-      local name = vim.api.nvim_buf_get_name(buf)
-      if type(name) == "string" and name:find("lazygit", 1, true) then
-        pcall(vim.api.nvim_buf_delete, buf, { force = true })
-      end
-    end
-  end
 end
 
 ---Set terminal colors
