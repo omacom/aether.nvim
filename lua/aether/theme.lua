@@ -36,25 +36,24 @@ function M.setup(opts)
   return colors, groups, opts
 end
 
----Nudge running TUIs in :terminal buffers so they repaint with the new
----palette. Vterm caches palette-resolved colors on each rendered cell,
----so updating `vim.g.terminal_color_*` only takes effect once the program
----inside the terminal redraws. SIGWINCH is the universal "please redraw"
----signal for full-screen TUIs (lazygit, htop, fzf, k9s, ...). POSIX only;
----no-op on Windows where SIGWINCH does not exist.
+---Make :terminal buffers reflect the new palette.
+---
+---Vterm caches its palette in the terminal struct at creation time, so
+---`vim.g.terminal_color_*` updates do not flow into already-running
+---terminals - SIGWINCH-triggered redraws repaint cells using the OLD
+---cached palette. The only reliable fix is to recreate the terminal.
+---
+---For lazygit specifically (which LazyVim/snacks binds to <leader>gg and
+---caches as a hidden buffer for toggle-style reuse), force-delete the
+---buffer. The next <leader>gg invocation has nothing to reuse and spawns
+---a fresh :terminal lazygit that boots vterm with the new palette from
+---cell zero. Safe because lazygit's view is reconstructible from git.
 function M.refresh_terminals()
-  local uv = vim.uv or vim.loop
-  if not uv or not uv.kill or vim.fn.has("unix") ~= 1 then
-    return
-  end
   for _, buf in ipairs(vim.api.nvim_list_bufs()) do
     if vim.api.nvim_buf_is_loaded(buf) and vim.bo[buf].buftype == "terminal" then
-      local chan = vim.b[buf].terminal_job_id
-      if type(chan) == "number" and chan > 0 then
-        local ok, pid = pcall(vim.fn.jobpid, chan)
-        if ok and type(pid) == "number" and pid > 0 then
-          pcall(uv.kill, pid, "sigwinch")
-        end
+      local name = vim.api.nvim_buf_get_name(buf)
+      if type(name) == "string" and name:find("lazygit", 1, true) then
+        pcall(vim.api.nvim_buf_delete, buf, { force = true })
       end
     end
   end
