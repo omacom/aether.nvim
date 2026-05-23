@@ -323,7 +323,7 @@ Manual commands:
 
 ## Supported Plugins
 
-Aether provides highlight groups for these plugins. Loaded plugins are detected automatically.
+Aether provides highlight groups for these plugins. All integrations load by default; set `plugins[name] = false` to opt out.
 
 Blink.cmp, Comment.nvim, conform.nvim, Diffview, Fidget, Flash, Gitsigns, indent blankline, Mason, Mini.nvim, Neo tree, Noice, nvim dap, nvim lint, nvim tree, Snacks, Telescope, Trouble, Which Key
 

@@ -57,9 +57,19 @@ function M.setup(colors, opts)
 
   -- Load plugin groups based on configuration. Three modes:
   --   * `all = true`  - load every integration unless explicitly disabled.
-  --   * `auto = true` - load only when the plugin is actually loaded
-  --                     (package.loaded[plugin] is truthy) unless
-  --                     explicitly disabled.
+  --   * `auto = true` - load every integration unless explicitly disabled.
+  --                     Equivalent to `all`; kept as a documented alias.
+  --                     Earlier versions gated on `package.loaded[plugin]`,
+  --                     but lazy-loaded plugins (neo-tree, gitsigns, etc.)
+  --                     aren't in package.loaded when the colorscheme
+  --                     applies, so their highlight groups were silently
+  --                     skipped and the plugins fell back to their own
+  --                     defaults (e.g. neo-tree's NeoTreeGitModified
+  --                     linking through to Nvim 0.10's `Changed` group,
+  --                     which renders as turquoise NvimLightCyan).
+  --                     Force-loading every known integration is cheap
+  --                     (a table extend) and avoids that whole class of
+  --                     timing bugs.
   --   * neither       - load only integrations explicitly opted in via
   --                     `plugins[name] = true`.
   for plugin, group_name in pairs(M.plugins) do
@@ -69,10 +79,8 @@ function M.setup(colors, opts)
       enabled = false
     elseif explicit == true then
       enabled = true
-    elseif opts.plugins.all then
+    elseif opts.plugins.all or opts.plugins.auto then
       enabled = true
-    elseif opts.plugins.auto then
-      enabled = package.loaded[plugin] ~= nil
     else
       enabled = false
     end
