@@ -24,6 +24,7 @@ local M = {}
 ---@field cyan string Cyan
 ---@field blue string Blue
 ---@field purple string Purple
+---@field magenta string Alias for purple
 ---@field brown string Brown, escape sequences
 ---@field dark_bg string Darker background, sidebars
 ---@field darker_bg string Darkest background
@@ -33,6 +34,7 @@ local M = {}
 ---@field bright_cyan string Bright cyan
 ---@field bright_blue string Bright blue
 ---@field bright_purple string Bright purple
+---@field bright_magenta string Alias for bright_purple
 local palette = {
   accent = "#ad523c",
   cursor = "#a2aebb",
@@ -77,9 +79,18 @@ function M.setup(opts)
   ---@class ColorScheme: aether.Palette
   local colors = vim.deepcopy(palette)
 
-  -- Apply user color overrides
+  -- Apply user color overrides. `magenta`/`bright_magenta` are accepted
+  -- as aliases for `purple`/`bright_purple`; the canonical name wins if
+  -- both are supplied. Deep-copied so we never mutate the user's config.
   if opts.colors and next(opts.colors) then
-    colors = vim.tbl_deep_extend("force", colors, opts.colors)
+    local overrides = vim.deepcopy(opts.colors)
+    if overrides.magenta ~= nil and overrides.purple == nil then
+      overrides.purple = overrides.magenta
+    end
+    if overrides.bright_magenta ~= nil and overrides.bright_purple == nil then
+      overrides.bright_purple = overrides.bright_magenta
+    end
+    colors = vim.tbl_deep_extend("force", colors, overrides)
   end
 
   -- Update Util defaults for blending
@@ -169,6 +180,11 @@ function M.setup(opts)
     white = colors.dark_fg,
     white_bright = colors.fg,
   }
+
+  -- Aliases: magenta / bright_magenta mirror purple / bright_purple so
+  -- either name resolves to the same color in groups and `on_colors`.
+  colors.magenta = colors.purple
+  colors.bright_magenta = colors.bright_purple
 
   -- User callback
   if opts.on_colors then
