@@ -13,10 +13,20 @@ local FS_EVENT_REARM_DELAY_MS = 50
 
 -- External theme spec files written by theme generators (aether CLI, omarchy).
 -- Each is a full lazy.nvim plugin spec returning `{ { "...aether.nvim", opts = {...} } }`.
-local EXTERNAL_THEME_PATHS = {
-  vim.fn.expand("~/.config/aether/theme/neovim.lua"),
+local AETHER_CLI_THEME_PATH = vim.fn.expand("~/.config/aether/theme/neovim.lua")
+local OMARCHY_THEME_PATHS = {
   vim.fn.expand("~/.config/omarchy/current/theme/neovim.lua"),
+  vim.fn.expand("~/.local/state/omarchy/current/theme/neovim.lua"),
 }
+local OMARCHY_THEME_PATH_SET = {}
+for _, path in ipairs(OMARCHY_THEME_PATHS) do
+  OMARCHY_THEME_PATH_SET[path] = true
+end
+
+local EXTERNAL_THEME_PATHS = { AETHER_CLI_THEME_PATH }
+for _, path in ipairs(OMARCHY_THEME_PATHS) do
+  table.insert(EXTERNAL_THEME_PATHS, path)
+end
 
 -- Patterns for module matching
 local AETHER_MODULE_PATTERN = "^aether"
@@ -47,12 +57,16 @@ _G.__aether_hotreload_state = _G.__aether_hotreload_state or {
 }
 local state = _G.__aether_hotreload_state
 
---- Path that delegates to userland on change instead of applying opts.
+--- Omarchy paths delegate to userland on change instead of applying opts.
 --- The user's LazyReload handler (e.g.
 --- ~/.config/nvim/lua/plugins/omarchy-theme-hotreload.lua) is the right
 --- place to drive colorscheme switching, lazy-aware plugin loading, etc.
 --- Aether's watcher just fires `User LazyReload` here as a notification.
-local OMARCHY_THEME_PATH = vim.fn.expand("~/.config/omarchy/current/theme/neovim.lua")
+--- @param path string
+--- @return boolean
+local function is_omarchy_theme_path(path)
+  return OMARCHY_THEME_PATH_SET[path] == true
+end
 
 --- Hash an opts table by its inspected representation. Cheap enough to run
 --- on every reload candidate and stable across identical tables.
@@ -371,16 +385,17 @@ end
 --- colorscheme.
 --- @param path string Absolute path that changed
 local function on_external_path_changed(path)
+  local is_omarchy_path = is_omarchy_theme_path(path)
   local opts = get_theme_opts_from_file(path)
   if opts then
-    if path ~= OMARCHY_THEME_PATH and not is_aether_active() then
+    if not is_omarchy_path and not is_aether_active() then
       return
     end
     reload_with_fresh_opts(path)
     return
   end
 
-  if path == OMARCHY_THEME_PATH then
+  if is_omarchy_path then
     local name = get_colorscheme_from_file(path)
     if name then
       apply_colorscheme(name, path)
@@ -575,23 +590,23 @@ local function group_paths_by_parent(paths)
   return grouped
 end
 
---- For paths routed through a known symlink (e.g. ~/.config/omarchy/current),
---- return the symlink-anchor directory we must watch separately so symlink
---- retargeting is observed. Currently hardcoded to the omarchy `current`
---- symlink because it is the only known dynamic anchor.
+--- For paths routed through a known current anchor (e.g.
+--- ~/.config/omarchy/current or ~/.local/state/omarchy/current), return the
+--- anchor directories we must watch separately so retargeting is observed.
 --- @param paths string[]
---- @return string|nil dir, string[] tracked_files, string[] filter_basenames
-local function omarchy_symlink_anchor(paths)
-  local relevant = {}
+--- @return table<string, string[]> anchor_dir -> tracked_files
+local function group_omarchy_symlink_anchors(paths)
+  local grouped = {}
+  local marker = "/omarchy/current/"
   for _, path in ipairs(paths) do
-    if path:find("/omarchy/current/", 1, true) then
-      table.insert(relevant, path)
+    local marker_start = path:find(marker, 1, true)
+    if marker_start then
+      local anchor = path:sub(1, marker_start + #"/omarchy" - 1)
+      grouped[anchor] = grouped[anchor] or {}
+      table.insert(grouped[anchor], path)
     end
   end
-  if #relevant == 0 then
-    return nil, nil, nil
-  end
-  return vim.fn.expand("~/.config/omarchy"), relevant, { "current" }
+  return grouped
 end
 
 --- Setup filesystem watchers for external theme spec files written by CLI
@@ -616,9 +631,8 @@ local function setup_external_config_watcher()
     start_fs_watch_dir(parent, paths_in_parent, basenames)
   end
 
-  local omarchy_dir, omarchy_paths, omarchy_filter = omarchy_symlink_anchor(EXTERNAL_THEME_PATHS)
-  if omarchy_dir then
-    start_fs_watch_dir(omarchy_dir, omarchy_paths, omarchy_filter)
+  for omarchy_dir, omarchy_paths in pairs(group_omarchy_symlink_anchors(EXTERNAL_THEME_PATHS)) do
+    start_fs_watch_dir(omarchy_dir, omarchy_paths, { "current" })
   end
 end
 
@@ -643,7 +657,12 @@ local function setup_status_command()
     table.insert(lines, ("  colors_name      = %s"):format(tostring(vim.g.colors_name)))
     table.insert(lines, ("  is_aether_active = %s"):format(tostring(is_aether_active())))
     table.insert(lines, ("  uv backend       = %s"):format(uv == vim.uv and "vim.uv" or "vim.loop"))
-    table.insert(lines, ("  omarchy target   = %s"):format(tostring(get_colorscheme_from_file(OMARCHY_THEME_PATH))))
+    for _, path in ipairs(OMARCHY_THEME_PATHS) do
+      table.insert(
+        lines,
+        ("  omarchy target   = %s (%s)"):format(tostring(get_colorscheme_from_file(path)), path)
+      )
+    end
 
     local function describe(path, kind)
       local handle = state.fs_event_handles[path]
@@ -666,8 +685,7 @@ local function setup_status_command()
     for parent in pairs(group_paths_by_parent(EXTERNAL_THEME_PATHS)) do
       describe(parent, "dir")
     end
-    local omarchy_dir = omarchy_symlink_anchor(EXTERNAL_THEME_PATHS)
-    if omarchy_dir then
+    for omarchy_dir in pairs(group_omarchy_symlink_anchors(EXTERNAL_THEME_PATHS)) do
       describe(omarchy_dir, "anchor")
     end
 

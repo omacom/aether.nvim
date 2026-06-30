@@ -312,6 +312,7 @@ Hot reload is enabled automatically when the plugin loads. It watches:
 - Edits to plugin files while developing aether itself
 - `~/.config/aether/theme/neovim.lua` (rewritten by the `aether` CLI when generating a theme)
 - `~/.config/omarchy/current/theme/neovim.lua` (when running under omarchy)
+- `~/.local/state/omarchy/current/theme/neovim.lua` (newer omarchy state layout)
 - `LazyReload` events from lazy.nvim
 
 Manual commands:
