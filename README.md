@@ -20,7 +20,7 @@ vim.opt.termguicolors = true
 
 ```lua
 {
-    "bjarneo/aether.nvim",
+    "omacom-io/aether.nvim",
     branch = "v3",
     priority = 1000,
     config = function()
@@ -36,7 +36,7 @@ Every palette color is a named variable you can override directly. Pass any comb
 
 ```lua
 {
-    "bjarneo/aether.nvim",
+    "omacom-io/aether.nvim",
     branch = "v3",
     name = "aether",
     priority = 1000,
@@ -92,7 +92,7 @@ Create `~/.config/nvim/lua/plugins/colorscheme.lua`:
 ```lua
 return {
     {
-        "bjarneo/aether.nvim",
+        "omacom-io/aether.nvim",
         branch = "v3",
         name = "aether",
         priority = 1000,
