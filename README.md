@@ -23,7 +23,7 @@ A modern Neovim colorscheme with base16 color customization and extensive plugin
 
 ```lua
 {
-    "bjarneo/aether.nvim",
+    "omacom-io/aether.nvim",
     priority = 1000,
     config = function()
         require("aether").setup()
@@ -36,7 +36,7 @@ A modern Neovim colorscheme with base16 color customization and extensive plugin
 
 ```lua
 {
-    "bjarneo/aether.nvim",
+    "omacom-io/aether.nvim",
     name = "aether",
     priority = 1000,
     opts = {
@@ -74,7 +74,7 @@ A modern Neovim colorscheme with base16 color customization and extensive plugin
 
 ```lua
 {
-    "bjarneo/aether.nvim",
+    "omacom-io/aether.nvim",
     name = "aether",
     priority = 1000,
     opts = {
@@ -98,7 +98,7 @@ A modern Neovim colorscheme with base16 color customization and extensive plugin
 
 ```lua
 {
-    "bjarneo/aether.nvim",
+    "omacom-io/aether.nvim",
     name = "aether",
     priority = 1000,
     opts = {
@@ -125,7 +125,7 @@ Create `~/.config/nvim/lua/plugins/colorscheme.lua`:
 ```lua
 return {
     {
-        "bjarneo/aether.nvim",
+        "omacom-io/aether.nvim",
         name = "aether",
         priority = 1000,
         opts = {
@@ -343,7 +343,7 @@ Then use it like any other colorscheme:
 Or with lazy.nvim:
 ```lua
 {
-    "bjarneo/aether.nvim",
+    "omacom-io/aether.nvim",
     priority = 1000,
 }
 
