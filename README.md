@@ -25,7 +25,7 @@ A modern Neovim colorscheme with semantic color customization and extensive plug
 
 ```lua
 {
-    "bjarneo/aether.nvim",
+    "omacom-io/aether.nvim",
     branch = "v2",
     priority = 1000,
     config = function()
@@ -39,7 +39,7 @@ A modern Neovim colorscheme with semantic color customization and extensive plug
 
 ```lua
 {
-    "bjarneo/aether.nvim",
+    "omacom-io/aether.nvim",
     branch = "v2",
     name = "aether",
     priority = 1000,
@@ -78,7 +78,7 @@ A modern Neovim colorscheme with semantic color customization and extensive plug
 
 ```lua
 {
-    "bjarneo/aether.nvim",
+    "omacom-io/aether.nvim",
     branch = "v2",
     name = "aether",
     priority = 1000,
@@ -107,7 +107,7 @@ Create `~/.config/nvim/lua/plugins/colorscheme.lua`:
 ```lua
 return {
     {
-        "bjarneo/aether.nvim",
+        "omacom-io/aether.nvim",
         branch = "v2",
         name = "aether",
         priority = 1000,
