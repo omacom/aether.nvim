@@ -194,7 +194,7 @@ end
 
 --- Check if a parsed lazy.nvim spec describes aether (first entry's
 --- plugin name contains "aether"). Matches the aether CLI's external
---- file shape `{ { "omacom-io/aether.nvim", opts = {...} } }`.
+--- file shape `{ { "omacom/aether.nvim", opts = {...} } }`.
 --- @param theme_spec table
 --- @return boolean
 local function is_aether_theme(theme_spec)
