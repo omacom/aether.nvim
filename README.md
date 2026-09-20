@@ -201,9 +201,26 @@ WCAG AA compliant versions used for text on the default background. Each meets a
 | Name | Hex | Purpose |
 |------|-----|---------|
 | `cursor` | `#a2aebb` | Cursor color |
-| `selection` | `#2c3040` | Visual selection |
-| `selection_foreground` | `#dfe6eb` | Selection text |
-| `selection_background` | `#4a5366` | Selection background |
+| `selection` | `#2c3040` | Shared highlight color (e.g. references and diff text) |
+| `selection_foreground` | `#dfe6eb` | Visual selection text |
+| `selection_background` | `#4a5366` | Visual selection background |
+
+`Visual` and `VisualNOS` use both selection colors so syntax colors do not
+become unreadable against the selection background. Previously, these groups
+used only `selection` as their background and preserved syntax foregrounds.
+If you customized only `selection`, set `selection_background` and a contrasting
+`selection_foreground` to customize visual selections.
+
+To retain syntax foregrounds and the previous background behavior instead:
+
+```lua
+require("aether").setup({
+    on_highlights = function(hl, colors)
+        hl.Visual = { bg = colors.bg_visual }
+        hl.VisualNOS = { bg = colors.bg_visual }
+    end,
+})
+```
 
 ## Derived Colors
 
