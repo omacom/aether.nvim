@@ -201,9 +201,13 @@ WCAG AA compliant versions used for text on the default background. Each meets a
 | Name | Hex | Purpose |
 |------|-----|---------|
 | `cursor` | `#a2aebb` | Cursor color |
-| `selection` | `#2c3040` | Shared highlight color (e.g. references and diff text) |
-| `selection_foreground` | `#dfe6eb` | Visual selection text |
-| `selection_background` | `#4a5366` | Visual selection background |
+| `selection` | `#2c3040` | Shared highlight color (e.g. diff text) |
+| `selection_foreground` | `#dfe6eb` | Visual selection and LSP reference text |
+| `selection_background` | `#4a5366` | Visual selection and LSP reference background |
+
+`LspReferenceText`, `LspReferenceRead`, and `LspReferenceWrite` also use both
+selection colors, keeping references readable when `selection` matches the
+normal foreground. Write references remain bold.
 
 `Visual` and `VisualNOS` use both selection colors so syntax colors do not
 become unreadable against the selection background. Previously, these groups

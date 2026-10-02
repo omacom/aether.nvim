@@ -40,9 +40,9 @@ function M.get(c, opts)
     ["@lsp.type.variable"]           = { link = "@variable" },
 
     -- LSP References and Definitions
-    LspReferenceText                 = { bg = c.selection, fg = c.fg },
-    LspReferenceRead                 = { bg = c.selection, fg = c.fg },
-    LspReferenceWrite                = { bg = c.selection, fg = c.yellow, bold = true },
+    LspReferenceText                 = { bg = c.selection_background, fg = c.selection_foreground },
+    LspReferenceRead                 = { bg = c.selection_background, fg = c.selection_foreground },
+    LspReferenceWrite                = { bg = c.selection_background, fg = c.selection_foreground, bold = true },
     LspSignatureActiveParameter      = { fg = c.orange, bold = true },
     LspCodeLens                      = { fg = c.muted },
     LspInlayHint                     = { fg = c.muted, bg = Util.blend_bg(c.muted, 0.1) },
